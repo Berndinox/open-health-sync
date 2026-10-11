@@ -1,0 +1,27 @@
+{
+  "status": 0,
+  "body": {
+    "updatetime": 1772496000,
+    "timezone": "Europe/Paris",
+    "measuregrps": [
+      {
+        "grpid": 1001,
+        "attrib": 0,
+        "date": 1772348400,
+        "created": 1772348410,
+        "modified": 1772348410,
+        "category": 1,
+        "deviceid": "fake-scale-0001",
+        "measures": [
+          {"value": 70000, "type": 1, "unit": -3, "algo": 0, "fm": 3},
+          {"value": 2000, "type": 6, "unit": -2, "algo": 0, "fm": 3}
+        ],
+        "modelid": 13,
+        "model": "Body Cardio",
+        "comment": null
+      }
+    ],
+    "more": 1,
+    "offset": 1
+  }
+}

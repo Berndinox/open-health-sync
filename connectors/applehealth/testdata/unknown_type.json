@@ -1,0 +1,10 @@
+{
+  "startDate": "2025-03-01T10:00:00Z",
+  "endDate": "2025-03-01T10:00:00Z",
+  "quantityType": "HKQuantityTypeIdentifierFutureMetric",
+  "value": 42.0,
+  "unit": "count",
+  "sourceName": "FutureApp",
+  "sourceBundleId": "com.future.app",
+  "metadata": {}
+}

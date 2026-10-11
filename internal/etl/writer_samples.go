@@ -1,0 +1,318 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package etl
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/soma-intelligence/open-health-sync/internal/model"
+)
+
+// Flat record families: one mapped record is one row, no parent to resolve.
+
+// hyperConflict is the dedup unique of a hypertable partitioned on timeCol.
+func hyperConflict(timeCol string) string {
+	return "tenant_id, user_id, content_hash, " + timeCol
+}
+
+// plainConflict is the dedup unique of a plain table.
+const plainConflict = "tenant_id, user_id, content_hash"
+
+// nullTime turns the zero time into NULL for nullable timestamp columns.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+// sourceSlugOrProvider guarantees source_slug is never written empty. The
+// pipeline fills SourceSlug at the attribution choke point; this covers a
+// sample that reached the writer another way.
+func sourceSlugOrProvider(slug, provider string) string {
+	if slug != "" {
+		return slug
+	}
+	return strings.ToLower(provider)
+}
+
+// dateOnly keeps the calendar date of t, in t's own location, as midnight UTC.
+func dateOnly(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// --- quantity_samples ---
+
+// quantitySampleColumns is the write shape of quantity_samples, shared by the
+// INSERT and the COPY path so the two cannot drift.
+var quantitySampleColumns = []string{
+	"tenant_id", "user_id", "provider", "source_slug", "source_name", "source_bundle_id", "device_id",
+	"product_type", "device_model", "was_user_entered",
+	"external_id", "quantity_type", "value", "unit", "is_primary_source",
+	"start_date", "end_date", "content_hash", "metadata",
+}
+
+// quantitySampleRow is the single source of truth for the values of one
+// quantity sample, same order as quantitySampleColumns.
+func quantitySampleRow(sc scope, s model.QuantitySample) []any {
+	p := sc.providerOr(s.Provider)
+	return []any{
+		sc.tenant, sc.user, p, sourceSlugOrProvider(s.SourceSlug, p), s.SourceName, s.SourceBundleID,
+		s.DeviceID, s.ProductType, s.DeviceModel, s.WasUserEntered,
+		s.ExternalID, s.QuantityType, s.Value,
+		s.Unit, s.IsPrimarySource, s.StartDate, nullTime(s.EndDate),
+		s.ContentHash, normalizeMetadata(s.Metadata),
+	}
+}
+
+// quantityLatestWins is the conflict action for a Replaceable quantity sample.
+var quantityLatestWins = latestWins(tQuantity, hyperConflict("start_date"), []string{"value", "unit"})
+
+// writeQuantitySamples writes quantity samples, switching to COPY above the
+// threshold. Replaceable figures always take batched INSERTs: the COPY path
+// ends in DO NOTHING, which would freeze them.
+func (w *Writer) writeQuantitySamples(ctx context.Context, tx TxLike, sc scope, samples []model.QuantitySample) (written, skipped int, err error) {
+	insertOnly, upsert, superseded := replaceableSplit(samples,
+		func(s model.QuantitySample) bool { return s.Replaceable },
+		func(s model.QuantitySample) copyDedupeKey {
+			return copyDedupeKey{hash: s.ContentHash, stamp: s.StartDate.UnixNano()}
+		})
+
+	if len(insertOnly) > 0 {
+		var n, k int
+		if len(insertOnly) > w.cfg.CopyThreshold {
+			seen := make(copyDedupe, len(insertOnly))
+			rows := make([][]any, 0, len(insertOnly))
+			dupes := 0
+			for _, s := range insertOnly {
+				if seen.staged(s.ContentHash, s.StartDate) {
+					dupes++
+					continue
+				}
+				rows = append(rows, quantitySampleRow(sc, s))
+			}
+			n, k, err = w.writeHighFrequencyCopy(ctx, tx, tQuantity, quantitySampleColumns, rows, hyperConflict("start_date"))
+			k += dupes
+		} else {
+			n, k, err = w.insertBatches(ctx, tx, tQuantity, insertHead(tQuantity, quantitySampleColumns),
+				doNothing(hyperConflict("start_date")), len(quantitySampleColumns), rowsOf(insertOnly, sc, quantitySampleRow))
+		}
+		if err != nil {
+			return written, skipped, err
+		}
+		written, skipped = written+n, skipped+k
+	}
+	if len(upsert) > 0 {
+		n, k, err := w.insertBatches(ctx, tx, tQuantity, insertHead(tQuantity, quantitySampleColumns),
+			quantityLatestWins, len(quantitySampleColumns), rowsOf(upsert, sc, quantitySampleRow))
+		if err != nil {
+			return written, skipped, err
+		}
+		written, skipped = written+n, skipped+k
+	}
+	return written, skipped + superseded, nil
+}
+
+// rowsOf maps records to rows with fn.
+func rowsOf[T any](in []T, sc scope, fn func(scope, T) []any) [][]any {
+	out := make([][]any, len(in))
+	for i, r := range in {
+		out[i] = fn(sc, r)
+	}
+	return out
+}
+
+// copyOrInsert writes rows of a first-write-wins table: COPY above the
+// threshold (after dropping in-batch duplicates by key), batched INSERTs below.
+func copyOrInsert[T any](ctx context.Context, w *Writer, tx TxLike, sc scope, table string, columns []string, conflict string,
+	recs []T, row func(scope, T) []any, key func(T) (string, time.Time)) (written, skipped int, err error) {
+	if len(recs) > w.cfg.CopyThreshold {
+		seen := make(copyDedupe, len(recs))
+		rows := make([][]any, 0, len(recs))
+		dupes := 0
+		for _, r := range recs {
+			h, at := key(r)
+			if seen.staged(h, at) {
+				dupes++
+				continue
+			}
+			rows = append(rows, row(sc, r))
+		}
+		written, skipped, err = w.writeHighFrequencyCopy(ctx, tx, table, columns, rows, conflict)
+		if err != nil {
+			return 0, 0, err
+		}
+		return written, skipped + dupes, nil
+	}
+	return w.insertBatches(ctx, tx, table, insertHead(table, columns), doNothing(conflict), len(columns), rowsOf(recs, sc, row))
+}
+
+// --- category_samples ---
+
+var categorySampleColumns = []string{
+	"tenant_id", "user_id", "provider", "source_slug", "source_name", "external_id", "category_type",
+	"value_int", "value_label", "start_date", "end_date", "content_hash", "metadata",
+}
+
+func categorySampleRow(sc scope, s model.CategorySample) []any {
+	p := sc.providerOr(s.Provider)
+	return []any{
+		sc.tenant, sc.user, p, sourceSlugOrProvider("", p), s.SourceName, s.ExternalID, s.CategoryType,
+		s.ValueInt, s.ValueLabel, s.StartDate, nullTime(s.EndDate), s.ContentHash, normalizeMetadata(s.Metadata),
+	}
+}
+
+// writeCategorySamples writes category samples, switching to COPY above the
+// threshold: sleep analysis alone makes this a high-volume table on a backfill.
+func (w *Writer) writeCategorySamples(ctx context.Context, tx TxLike, sc scope, samples []model.CategorySample) (written, skipped int, err error) {
+	return copyOrInsert(ctx, w, tx, sc, tCategory, categorySampleColumns, hyperConflict("start_date"), samples, categorySampleRow,
+		func(s model.CategorySample) (string, time.Time) { return s.ContentHash, s.StartDate })
+}
+
+// --- nutrition_logs ---
+
+var nutritionColumns = []string{
+	"tenant_id", "user_id", "provider", "source_slug", "external_id", "start_date", "end_date",
+	"meal_type", "energy_kcal", "protein_g", "carbs_g", "fat_g",
+	"fiber_g", "sugar_g", "sodium_mg", "nutrients_json", "content_hash", "metadata",
+}
+
+func nutritionRow(sc scope, s model.NutritionLog) []any {
+	p := sc.providerOr(s.Provider)
+	nj := s.NutrientsJSON
+	if nj == nil {
+		nj = map[string]any{}
+	}
+	return []any{
+		sc.tenant, sc.user, p, sourceSlugOrProvider("", p), s.ExternalID, s.StartDate, s.EndDate,
+		s.MealType, s.EnergyKcal, s.ProteinG, s.CarbsG, s.FatG,
+		s.FiberG, s.SugarG, s.SodiumMg, nj, s.ContentHash, normalizeMetadata(s.Metadata),
+	}
+}
+
+var nutritionLatestWins = latestWins(tNutrition, hyperConflict("start_date"),
+	[]string{"energy_kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "sodium_mg", "nutrients_json"})
+
+// writeNutritionLogs batch-inserts nutrition logs. A duplicate is skipped,
+// except a Replaceable log, whose stored figures the new copy replaces.
+func (w *Writer) writeNutritionLogs(ctx context.Context, tx TxLike, sc scope, logs []model.NutritionLog) (written, skipped int, err error) {
+	insertOnly, upsert, superseded := replaceableSplit(logs,
+		func(l model.NutritionLog) bool { return l.Replaceable },
+		func(l model.NutritionLog) copyDedupeKey {
+			return copyDedupeKey{hash: l.ContentHash, stamp: l.StartDate.UnixNano()}
+		})
+	for _, g := range []struct {
+		logs       []model.NutritionLog
+		onConflict string
+	}{
+		{insertOnly, doNothing(hyperConflict("start_date"))},
+		{upsert, nutritionLatestWins},
+	} {
+		n, k, err := w.insertBatches(ctx, tx, tNutrition, insertHead(tNutrition, nutritionColumns), g.onConflict,
+			len(nutritionColumns), rowsOf(g.logs, sc, nutritionRow))
+		if err != nil {
+			return written, skipped, err
+		}
+		written, skipped = written+n, skipped+k
+	}
+	return written, skipped + superseded, nil
+}
+
+// --- heartbeat_samples ---
+
+var heartbeatColumns = []string{"tenant_id", "user_id", "provider", "series_id", "timestamp", "rr_ms", "content_hash"}
+
+func heartbeatRow(sc scope, s model.HeartbeatSample) []any {
+	return []any{sc.tenant, sc.user, sc.provider, s.SeriesID, s.Timestamp, s.RRMS, model.HeartbeatSampleContentHash(s)}
+}
+
+// writeHeartbeatSamples writes heartbeat samples, using COPY above threshold.
+func (w *Writer) writeHeartbeatSamples(ctx context.Context, tx TxLike, sc scope, samples []model.HeartbeatSample) (written, skipped int, err error) {
+	return copyOrInsert(ctx, w, tx, sc, tHeartbeat, heartbeatColumns, hyperConflict(`"timestamp"`), samples, heartbeatRow,
+		func(s model.HeartbeatSample) (string, time.Time) {
+			return model.HeartbeatSampleContentHash(s), s.Timestamp
+		})
+}
+
+// --- observations ---
+
+var observationColumns = []string{
+	"tenant_id", "user_id", "provider", "source_slug", "source_name", "device_id", "ts", "end_ts",
+	"canonical_code", "value_num", "value_code", "value_text", "unit_ucum", "value_canonical",
+	"is_primary_source", "type_concept", "source_value", "raw_ref", "content_hash", "metadata",
+}
+
+func observationHash(o model.Observation) string {
+	if o.ContentHash != "" {
+		return o.ContentHash
+	}
+	return model.ObservationContentHash(o)
+}
+
+func observationRow(sc scope, o model.Observation) []any {
+	p := sc.providerOr(o.Provider)
+	return []any{
+		sc.tenant, sc.user, p, sourceSlugOrProvider("", p), o.SourceName, o.DeviceID, o.TS, nullTime(o.EndTS),
+		o.CanonicalCode, o.ValueNum, o.ValueCode, o.ValueText, o.UnitUCUM, o.ValueCanonical,
+		o.IsPrimarySource, o.TypeConcept, o.SourceValue, o.S3Ref, observationHash(o), normalizeMetadata(o.Metadata),
+	}
+}
+
+// writeObservations writes generic coded observations, the long tail of any
+// metric without a typed table, switching to COPY above the threshold.
+func (w *Writer) writeObservations(ctx context.Context, tx TxLike, sc scope, obs []model.Observation) (written, skipped int, err error) {
+	return copyOrInsert(ctx, w, tx, sc, tObservation, observationColumns, hyperConflict("ts"), obs, observationRow,
+		func(o model.Observation) (string, time.Time) { return observationHash(o), o.TS })
+}
+
+// --- daily_summaries ---
+
+var dailyColumns = []string{
+	"tenant_id", "user_id", "provider", "source_slug", "summary_date",
+	"readiness_score", "activity_score", "sleep_score", "recovery_score", "strain_score",
+	"step_count", "active_kcal", "total_kcal", "distance_m", "floors_climbed",
+	"resting_hr", "hrv_avg_ms", "content_hash", "metadata",
+}
+
+var dailyFigures = []string{"readiness_score", "activity_score", "sleep_score", "recovery_score", "strain_score",
+	"step_count", "active_kcal", "total_kcal", "distance_m", "floors_climbed", "resting_hr", "hrv_avg_ms"}
+
+func dailyRow(sc scope, s model.DailySummary) []any {
+	p := sc.providerOr(s.Provider)
+	return []any{
+		sc.tenant, sc.user, p, sourceSlugOrProvider("", p), dateOnly(s.SummaryDate),
+		s.ReadinessScore, s.ActivityScore, s.SleepScore, s.RecoveryScore, s.StrainScore,
+		s.StepCount, s.ActiveKcal, s.TotalKcal, s.DistanceM, s.FloorsClimbed,
+		s.RestingHR, s.HRVAvgMs, s.ContentHash, normalizeMetadata(s.Metadata),
+	}
+}
+
+var summaryLatestWins = latestWins(tDaily, hyperConflict("summary_date"), dailyFigures)
+
+// writeDailySummaries batch-inserts provider daily summaries. A duplicate is
+// skipped, except a Replaceable summary, whose stored figures the new copy
+// replaces.
+func (w *Writer) writeDailySummaries(ctx context.Context, tx TxLike, sc scope, summaries []model.DailySummary) (written, skipped int, err error) {
+	insertOnly, upsert, superseded := replaceableSplit(summaries,
+		func(s model.DailySummary) bool { return s.Replaceable },
+		func(s model.DailySummary) copyDedupeKey {
+			return copyDedupeKey{hash: s.ContentHash, stamp: dateOnly(s.SummaryDate).UnixNano()}
+		})
+	for _, g := range []struct {
+		rows       []model.DailySummary
+		onConflict string
+	}{
+		{insertOnly, doNothing(hyperConflict("summary_date"))},
+		{upsert, summaryLatestWins},
+	} {
+		n, k, err := w.insertBatches(ctx, tx, tDaily, insertHead(tDaily, dailyColumns), g.onConflict,
+			len(dailyColumns), rowsOf(g.rows, sc, dailyRow))
+		if err != nil {
+			return written, skipped, err
+		}
+		written, skipped = written+n, skipped+k
+	}
+	return written, skipped + superseded, nil
+}

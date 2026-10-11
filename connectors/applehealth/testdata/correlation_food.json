@@ -1,0 +1,30 @@
+{
+  "startDate": "2025-03-01T12:00:00Z",
+  "endDate": "2025-03-01T12:30:00Z",
+  "correlationType": "HKCorrelationTypeIdentifierFood",
+  "objects": [
+    {
+      "sampleType": "HKQuantityTypeIdentifierDietaryEnergyConsumed",
+      "value": 450.0,
+      "unit": "kcal"
+    },
+    {
+      "sampleType": "HKQuantityTypeIdentifierDietaryProtein",
+      "value": 25.0,
+      "unit": "g"
+    },
+    {
+      "sampleType": "HKQuantityTypeIdentifierDietaryCarbohydrates",
+      "value": 55.0,
+      "unit": "g"
+    },
+    {
+      "sampleType": "HKQuantityTypeIdentifierDietaryFatTotal",
+      "value": 12.0,
+      "unit": "g"
+    }
+  ],
+  "sourceName": "Example Food Log",
+  "sourceBundleId": "com.example.food",
+  "metadata": {}
+}

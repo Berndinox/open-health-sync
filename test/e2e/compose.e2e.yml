@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Overlay for the end to end suites (test/e2e/lib.sh sets the variables):
+#   docker compose -p ohs-e2e -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.build.yml -f test/e2e/compose.e2e.yml ...
+# The suites build the image from source (the build overlay). This file keeps
+# them off the published and local image tags, off a .env at the repository
+# root and off host port 8080.
+services:
+  ohs:
+    image: ${OHS_E2E_IMAGE:-ohs-e2e}
+    env_file: !override
+      - path: ${OHS_E2E_ENV_FILE:?set by test/e2e/lib.sh}
+        required: true
+    ports: !override
+      - "127.0.0.1:${OHS_E2E_PORT:-18080}:8080"

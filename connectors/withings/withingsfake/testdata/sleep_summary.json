@@ -1,0 +1,50 @@
+{
+  "status": 0,
+  "body": {
+    "series": [
+      {
+        "id": 2001,
+        "timezone": "Europe/Paris",
+        "model": 32,
+        "model_id": 63,
+        "startdate": 1772402400,
+        "enddate": 1772431200,
+        "date": "2026-03-02",
+        "created": 1772431300,
+        "modified": 1772431300,
+        "data": {
+          "deepsleepduration": 3600,
+          "remsleepduration": 3600,
+          "lightsleepduration": 1800,
+          "wakeupduration": 1800,
+          "hr_average": 60,
+          "hr_min": 50,
+          "hr_max": 70,
+          "rr_average": 15,
+          "sleep_score": 80,
+          "total_sleep_time": 9000,
+          "total_timeinbed": 28800
+        }
+      },
+      {
+        "id": 2002,
+        "timezone": "Europe/Paris",
+        "model": 32,
+        "model_id": 63,
+        "startdate": 1772488800,
+        "enddate": 1772517600,
+        "date": "2026-03-03",
+        "data": {
+          "deepsleepduration": 5400,
+          "lightsleepduration": 3600,
+          "wakeupduration": 1800,
+          "hr_average": 58,
+          "rr_average": 14,
+          "sleep_score": 75
+        }
+      }
+    ],
+    "more": false,
+    "offset": 0
+  }
+}

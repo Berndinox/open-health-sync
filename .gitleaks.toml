@@ -1,0 +1,12 @@
+title = "ohs gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "test fixtures and placeholder values"
+regexes = [
+  '''ohs_(sk|ut)_[A-Za-z0-9]*EXAMPLE[A-Za-z0-9]*''',
+  # throwaway credentials of the local S3 test container
+  '''[a-z]{3}testsecret-[0-9]+''',
+]

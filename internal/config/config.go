@@ -1,0 +1,157 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Package config loads Open Health Sync configuration from environment variables.
+package config
+
+import (
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// ProviderKeys holds the OHS_<SLUG>_<FIELD> values of one provider, keyed by FIELD
+// (for example "CLIENT_ID").
+type ProviderKeys map[string]string
+
+// Config is the full process configuration.
+type Config struct {
+	DatabaseURL, PublicURL, RawStore, Listen, LogLevel, BootstrapTenant string
+	EncryptionKey                                                       []byte          // decoded, len 32
+	Roles                                                               map[string]bool // "api", "collect", "etl"
+	Metrics                                                             bool
+	// RetentionDays prunes raw files and normalized data older than this
+	// many days; 0 keeps everything.
+	RetentionDays int
+	// IngestConcurrency bounds the device uploads one api process handles at
+	// once (OHS_INGEST_CONCURRENCY, default 8).
+	IngestConcurrency int
+	Providers         map[string]ProviderKeys // key = lower-case slug
+}
+
+// DefaultIngestConcurrency is OHS_INGEST_CONCURRENCY when unset.
+const DefaultIngestConcurrency = 8
+
+// reserved are the OHS_ variables (without prefix) that are never provider settings.
+var reserved = map[string]bool{
+	"DATABASE_URL":       true,
+	"ENCRYPTION_KEY":     true,
+	"PUBLIC_URL":         true,
+	"RAW_STORE":          true,
+	"ROLES":              true,
+	"BOOTSTRAP_TENANT":   true,
+	"LISTEN":             true,
+	"LOG_LEVEL":          true,
+	"METRICS":            true,
+	"RETENTION_DAYS":     true,
+	"INGEST_CONCURRENCY": true,
+	"MCP_URL":            true, // client side settings of `ohs mcp`
+	"MCP_KEY":            true,
+	"HTTP_PORT":          true, // read by docker compose only (host port)
+	"VERSION":            true, // read by docker compose only (image tag)
+}
+
+// ErrEncryptionKey is wrapped by every Load error about OHS_ENCRYPTION_KEY
+// (missing, not base64, wrong length).
+var ErrEncryptionKey = errors.New("OHS_ENCRYPTION_KEY")
+
+var validRoles = map[string]bool{"api": true, "collect": true, "etl": true}
+
+// Load builds a Config. env looks up one variable; environ is the full
+// "KEY=value" list used to discover OHS_<SLUG>_<FIELD> provider settings.
+func Load(env func(string) (string, bool), environ []string) (Config, error) {
+	get := func(name, def string) string {
+		if v, ok := env(name); ok && v != "" {
+			return v
+		}
+		return def
+	}
+	c := Config{
+		DatabaseURL:     get("OHS_DATABASE_URL", ""),
+		PublicURL:       get("OHS_PUBLIC_URL", "http://localhost:8080"),
+		RawStore:        get("OHS_RAW_STORE", "file:///var/lib/ohs/raw"),
+		Listen:          get("OHS_LISTEN", ":8080"),
+		LogLevel:        get("OHS_LOG_LEVEL", "info"),
+		BootstrapTenant: get("OHS_BOOTSTRAP_TENANT", ""),
+		Roles:           map[string]bool{},
+		Providers:       map[string]ProviderKeys{},
+	}
+	if c.DatabaseURL == "" {
+		return Config{}, fmt.Errorf("OHS_DATABASE_URL is required")
+	}
+
+	raw := get("OHS_ENCRYPTION_KEY", "")
+	if raw == "" {
+		return Config{}, fmt.Errorf("%w is required (32 bytes, base64)", ErrEncryptionKey)
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w is not valid base64", ErrEncryptionKey)
+	}
+	if len(key) != 32 {
+		return Config{}, fmt.Errorf("%w must decode to 32 bytes, got %d", ErrEncryptionKey, len(key))
+	}
+	c.EncryptionKey = key
+
+	for _, r := range strings.Split(get("OHS_ROLES", "api,collect,etl"), ",") {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if !validRoles[r] {
+			return Config{}, fmt.Errorf("OHS_ROLES: unknown role %q (want api, collect, etl)", r)
+		}
+		c.Roles[r] = true
+	}
+	if len(c.Roles) == 0 {
+		return Config{}, fmt.Errorf("OHS_ROLES: no role selected")
+	}
+
+	c.Metrics = true
+	if v := get("OHS_METRICS", ""); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("OHS_METRICS: %q is not a boolean", v)
+		}
+		c.Metrics = b
+	}
+
+	if v := get("OHS_RETENTION_DAYS", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return Config{}, fmt.Errorf("OHS_RETENTION_DAYS: %q is not a non-negative integer", v)
+		}
+		c.RetentionDays = n
+	}
+
+	c.IngestConcurrency = DefaultIngestConcurrency
+	if v := get("OHS_INGEST_CONCURRENCY", ""); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("OHS_INGEST_CONCURRENCY: %q is not a positive integer", v)
+		}
+		c.IngestConcurrency = n
+	}
+
+	for _, kv := range environ {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(k, "OHS_") {
+			continue
+		}
+		rest := strings.TrimPrefix(k, "OHS_")
+		if reserved[rest] {
+			continue
+		}
+		slug, field, ok := strings.Cut(rest, "_")
+		if !ok || slug == "" || field == "" {
+			continue
+		}
+		slug = strings.ToLower(slug)
+		if c.Providers[slug] == nil {
+			c.Providers[slug] = ProviderKeys{}
+		}
+		c.Providers[slug][field] = v
+	}
+	return c, nil
+}

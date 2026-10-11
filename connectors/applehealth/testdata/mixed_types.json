@@ -1,0 +1,68 @@
+[
+  {
+    "startDate": "2025-03-01T14:30:00Z",
+    "endDate": "2025-03-01T14:30:00Z",
+    "quantityType": "HKQuantityTypeIdentifierHeartRate",
+    "value": 72.5,
+    "unit": "count/min",
+    "sourceName": "Apple Watch",
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-03-01T00:00:00Z",
+    "endDate": "2025-03-01T23:59:59Z",
+    "categoryType": "HKCategoryTypeIdentifierMenstrualFlow",
+    "value": 2,
+    "sourceName": "Health",
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-03-01T07:00:00Z",
+    "endDate": "2025-03-01T07:45:00Z",
+    "workoutActivityType": 37,
+    "duration": 2700.0,
+    "sourceName": "Apple Watch",
+    "totalEnergyBurned": 350.5,
+    "totalDistance": 5234.0,
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-03-01T14:30:00Z",
+    "endDate": "2025-03-01T14:30:30Z",
+    "classification": 1,
+    "symptomsStatus": 0,
+    "numberOfVoltageMeasurements": 15000,
+    "samplingFrequency": 512.0,
+    "averageHeartRate": 72.0,
+    "voltagePath": "user-123/Apple Health/ECG/ecg_2025-03-01.json",
+    "sourceName": "Apple Watch",
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-03-01T12:00:00Z",
+    "endDate": "2025-03-01T12:30:00Z",
+    "quantityType": "HKQuantityTypeIdentifierDietaryProtein",
+    "value": 25.0,
+    "unit": "g",
+    "sourceName": "Example Food Log",
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-01-15T09:00:00Z",
+    "endDate": "2025-01-15T09:00:00Z",
+    "clinicalType": "AllergyRecord",
+    "fhirResource": {
+      "resourceType": "AllergyIntolerance",
+      "code": {"coding": [{"display": "Peanut"}]}
+    },
+    "sourceName": "Health Records",
+    "metadata": {}
+  },
+  {
+    "startDate": "2025-03-01T14:30:00Z",
+    "quantityType": "HKQuantityTypeIdentifierFakeNewType",
+    "value": 1.0,
+    "unit": "count",
+    "metadata": {}
+  }
+]

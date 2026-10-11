@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package auth
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"slices"
+	"strings"
+
+	"github.com/google/uuid"
+)
+
+// Scope is what a route demands of the caller.
+type Scope string
+
+const (
+	// TenantKey demands a tenant API key (ohs_sk_). User tokens are refused.
+	TenantKey Scope = "tenant"
+	// The user scopes demand a user token (ohs_ut_) holding that scope. Tenant keys are refused.
+	UserUpload  Scope = "upload"
+	UserConnect Scope = "connect"
+	UserRead    Scope = "read"
+)
+
+// Principal is the authenticated caller. For an API key UserID and Scopes are nil.
+type Principal struct {
+	TenantID uuid.UUID
+	UserID   *uuid.UUID
+	Scopes   []string
+}
+
+// ErrUnauthenticated is what a Lookup returns for an unknown, revoked or expired
+// secret, or one whose user is being deleted. Any other error is a server fault.
+var ErrUnauthenticated = errors.New("auth: unauthenticated")
+
+// Lookup resolves the SHA-256 hex hash of a presented secret.
+type Lookup func(ctx context.Context, hash string) (Principal, error)
+
+type ctxKey struct{}
+
+// From returns the Principal the middleware put on the context.
+func From(ctx context.Context) (Principal, bool) {
+	p, ok := ctx.Value(ctxKey{}).(Principal)
+	return p, ok
+}
+
+// Middleware authenticates the bearer secret with lookup and enforces want.
+func Middleware(lookup Lookup, want Scope) func(http.Handler) http.Handler {
+	return MiddlewareAny(lookup, want)
+}
+
+// MiddlewareAny authenticates the bearer secret with lookup and lets the
+// request through when the credential satisfies at least one of wants (for
+// example a tenant key or a user token with scope read). It panics without a
+// scope: that is a wiring mistake.
+func MiddlewareAny(lookup Lookup, wants ...Scope) func(http.Handler) http.Handler {
+	if len(wants) == 0 {
+		panic("auth: MiddlewareAny needs at least one scope")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, ok := bearer(r)
+			if !ok || !(strings.HasPrefix(raw, PrefixSecretKey) || strings.HasPrefix(raw, PrefixUserToken)) {
+				unauthorized(w)
+				return
+			}
+			p, err := lookup(r.Context(), Hash(raw))
+			if errors.Is(err, ErrUnauthenticated) {
+				unauthorized(w)
+				return
+			}
+			if err != nil {
+				// The cause may name infrastructure; it is logged, never sent. No token or hash.
+				slog.ErrorContext(r.Context(), "auth: lookup failed", "error", err)
+				WriteProblem(w, http.StatusInternalServerError, "Internal Server Error", "authentication is temporarily unavailable")
+				return
+			}
+			if !slices.ContainsFunc(wants, func(want Scope) bool { return allowed(p, want) }) {
+				WriteProblem(w, http.StatusForbidden, "Forbidden", "this credential cannot call this endpoint")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
+		})
+	}
+}
+
+func allowed(p Principal, want Scope) bool {
+	if want == TenantKey {
+		return p.UserID == nil
+	}
+	return p.UserID != nil && slices.Contains(p.Scopes, string(want))
+}
+
+func bearer(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	const p = "Bearer "
+	if len(h) <= len(p) || !strings.EqualFold(h[:len(p)], p) {
+		return "", false
+	}
+	return strings.TrimSpace(h[len(p):]), true
+}
+
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	WriteProblem(w, http.StatusUnauthorized, "Unauthorized", "a valid API key or user token is required")
+}

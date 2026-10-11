@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/soma-intelligence/open-health-sync/security/advisories/new
+    about: Report security problems privately, never in a public issue.
+  - name: Self-hosting guide
+    url: https://github.com/soma-intelligence/open-health-sync/blob/main/docs/self-hosting.md
+    about: Configuration, images, Raspberry Pi, S3 and operating notes.

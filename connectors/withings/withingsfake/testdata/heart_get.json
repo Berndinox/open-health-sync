@@ -1,0 +1,8 @@
+{
+  "status": 0,
+  "body": {
+    "signal": [-100, 0, 150, 300, 0, -50],
+    "sampling_frequency": 300,
+    "wearposition": 1
+  }
+}

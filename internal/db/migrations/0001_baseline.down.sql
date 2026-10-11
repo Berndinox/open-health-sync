@@ -1,0 +1,4 @@
+-- SPDX-License-Identifier: AGPL-3.0-only
+DROP SCHEMA IF EXISTS ohs_data CASCADE;
+DROP SCHEMA IF EXISTS ohs_sync CASCADE;
+DROP SCHEMA IF EXISTS ohs_core CASCADE;

@@ -1,0 +1,32 @@
+{
+  "status": 0,
+  "body": {
+    "updatetime": 1772496000,
+    "timezone": "Europe/Paris",
+    "measuregrps": [
+      {
+        "grpid": 1002,
+        "attrib": 0,
+        "date": 1772434800,
+        "category": 1,
+        "deviceid": "fake-bpm-0001",
+        "measures": [
+          {"value": 80, "type": 9, "unit": 0},
+          {"value": 120, "type": 10, "unit": 0},
+          {"value": 60, "type": 11, "unit": 0}
+        ]
+      },
+      {
+        "grpid": 1003,
+        "attrib": 0,
+        "date": 1772434800,
+        "category": 2,
+        "measures": [
+          {"value": 65000, "type": 1, "unit": -3}
+        ]
+      }
+    ],
+    "more": false,
+    "offset": 0
+  }
+}

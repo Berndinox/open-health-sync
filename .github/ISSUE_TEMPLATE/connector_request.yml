@@ -1,0 +1,53 @@
+name: Connector request
+description: Ask for a new data source (wearable, app or health platform).
+labels: ["connector"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per provider. Please search the existing connector requests first and add a
+        thumbs up there if the provider is already asked for.
+        Writing it yourself? See [writing a connector](https://github.com/soma-intelligence/open-health-sync/blob/main/docs/writing-a-connector.md).
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      placeholder: e.g. a wearable brand or health platform
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: API documentation
+      description: Link to the provider's public developer documentation.
+  - type: dropdown
+    id: access
+    attributes:
+      label: How the data is reached
+      options:
+        - Cloud API with OAuth
+        - Cloud API with another auth scheme
+        - On-device SDK (the phone uploads)
+        - File export
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data types
+      description: Which data you need (heart rate, sleep, workouts, ...), and how often.
+    validations:
+      required: true
+  - type: textarea
+    id: access-terms
+    attributes:
+      label: Access requirements
+      description: Developer program, partner approval, fees or rate limits you know of.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I can test against a real account or device.
+        - label: I would like to write the connector myself.

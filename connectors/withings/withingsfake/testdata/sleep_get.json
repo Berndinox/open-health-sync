@@ -1,0 +1,14 @@
+{
+  "status": 0,
+  "body": {
+    "series": [
+      {"startdate": 1772402400, "enddate": 1772406000, "state": 1},
+      {"startdate": 1772406000, "enddate": 1772413200, "state": 2},
+      {"startdate": 1772413200, "enddate": 1772416800, "state": 3},
+      {"startdate": 1772416800, "enddate": 1772418600, "state": 0},
+      {"startdate": 1772488800, "enddate": 1772492400, "state": 1},
+      {"startdate": 1772492400, "enddate": 1772497800, "state": 2},
+      {"startdate": 1772497800, "enddate": 1772499600, "state": 0}
+    ]
+  }
+}

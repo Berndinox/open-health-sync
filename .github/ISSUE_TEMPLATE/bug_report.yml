@@ -1,0 +1,72 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security problems go through
+        [private vulnerability reporting](https://github.com/soma-intelligence/open-health-sync/security/advisories/new), not here.
+        Never paste real health data, API keys, tokens or your `.env`: use invented values.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, requests or a minimal payload (invented values only).
+      placeholder: |
+        1. docker compose -f deploy/docker-compose.yml up -d
+        2. curl ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ohs version` (or the image tag you run).
+      placeholder: ohs 0.0.1 (abc1234)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Docker Compose, published image
+        - Docker Compose, built from source
+        - Release binary
+        - Built with go build
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Apple Health ingest
+        - Withings connector
+        - REST API
+        - MCP server
+        - ETL and normalization
+        - Raw store (file or S3)
+        - Deployment and configuration
+        - Documentation
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and architecture, Postgres and TimescaleDB versions, raw store type, roles (`OHS_ROLES`).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and `ohs doctor` output
+      description: Relevant lines only. Check that they hold no token, key or health value.
+      render: text

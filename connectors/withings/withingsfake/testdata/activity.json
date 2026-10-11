@@ -1,0 +1,39 @@
+{
+  "status": 0,
+  "body": {
+    "activities": [
+      {
+        "date": "2026-03-01",
+        "timezone": "Europe/Paris",
+        "deviceid": "fake-watch-0001",
+        "hash_deviceid": "fake-watch-0001",
+        "brand": 18,
+        "is_tracker": true,
+        "steps": 8000,
+        "distance": 6000,
+        "elevation": 10,
+        "soft": 3600,
+        "moderate": 1200,
+        "intense": 600,
+        "active": 1800,
+        "calories": 300,
+        "totalcalories": 2300
+      },
+      {
+        "date": "2026-03-02",
+        "timezone": "Europe/Paris",
+        "deviceid": "fake-watch-0001",
+        "steps": 10000,
+        "distance": 7500,
+        "elevation": 20,
+        "soft": 4000,
+        "moderate": 1500,
+        "intense": 900,
+        "calories": 400,
+        "totalcalories": 2400
+      }
+    ],
+    "more": false,
+    "offset": 0
+  }
+}

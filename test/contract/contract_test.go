@@ -1,0 +1,326 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//go:build integration
+
+package contract
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/soma-intelligence/open-health-sync/internal/app"
+	"github.com/soma-intelligence/open-health-sync/internal/config"
+	"github.com/soma-intelligence/open-health-sync/internal/db"
+	"github.com/soma-intelligence/open-health-sync/internal/tenant"
+)
+
+const fixtureDir = "../../connectors/applehealth/testdata/e2e"
+
+type client struct {
+	t    *testing.T
+	base string
+	http *http.Client
+}
+
+type reply struct {
+	status int
+	body   []byte
+}
+
+func (r reply) json(t *testing.T, v any) {
+	t.Helper()
+	require.NoError(t, json.Unmarshal(r.body, v), "%s", r.body)
+}
+
+func (c *client) do(method, path, secret string, body io.Reader, header map[string]string) reply {
+	c.t.Helper()
+	req, err := http.NewRequest(method, c.base+path, body)
+	require.NoError(c.t, err)
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	res, err := c.http.Do(req)
+	require.NoError(c.t, err)
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	require.NoError(c.t, err)
+	return reply{status: res.StatusCode, body: b}
+}
+
+func (c *client) json(method, path, secret, body string) reply {
+	c.t.Helper()
+	var r io.Reader
+	h := map[string]string{}
+	if body != "" {
+		r = strings.NewReader(body)
+		h["Content-Type"] = "application/json"
+	}
+	return c.do(method, path, secret, r, h)
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+	return addr
+}
+
+// startServer runs app.Run with every role on a fresh database and returns
+// its base URL and a pool on the same database.
+func startServer(t *testing.T) (string, string) {
+	t.Helper()
+	url := db.TestDB(t)
+	addr := freeAddr(t)
+	cfg := config.Config{
+		DatabaseURL:   url,
+		RawStore:      "file://" + t.TempDir(),
+		Listen:        addr,
+		LogLevel:      "warn",
+		PublicURL:     "http://" + addr,
+		Roles:         map[string]bool{"api": true, "collect": true, "etl": true},
+		Metrics:       true,
+		EncryptionKey: make([]byte, 32),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx, cfg) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(40 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		res, err := http.Get("http://" + addr + "/healthz")
+		if err == nil {
+			res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("server stopped: %v", err)
+		default:
+		}
+		require.True(t, time.Now().Before(deadline), "server never became healthy")
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "http://" + addr, url
+}
+
+// TestQuickstartMatchesOpenAPI replays the README quickstart (plus the reads
+// and a few refusals) through the recording client. Every request and
+// response must match api/openapi.yaml: documented route, parameters, status
+// and body, and no response member the document does not name.
+func TestQuickstartMatchesOpenAPI(t *testing.T) {
+	base, url := startServer(t)
+	rec, err := NewRecorder(context.Background(), "../../api/openapi.yaml", base)
+	require.NoError(t, err)
+	c := &client{t: t, base: base, http: &http.Client{Transport: rec, Timeout: 30 * time.Second}}
+
+	// ohs admin tenant create --name contract
+	pool, err := db.Open(context.Background(), url)
+	require.NoError(t, err)
+	_, key, err := tenant.New(pool).CreateTenant(context.Background(), "contract")
+	pool.Close()
+	require.NoError(t, err)
+
+	// Ops.
+	assert.Equal(t, 200, c.json("GET", "/healthz", "", "").status)
+	assert.Equal(t, 200, c.json("GET", "/readyz", "", "").status)
+	assert.Equal(t, 200, c.json("GET", "/metrics", "", "").status)
+	assert.Equal(t, 200, c.json("GET", "/v1/providers", key, "").status)
+
+	// User and token.
+	r := c.json("POST", "/v1/users", key, `{"external_ref":"contract-user"}`)
+	require.Equal(t, 201, r.status, "%s", r.body)
+	var user struct{ ID string }
+	r.json(t, &user)
+	assert.Equal(t, 201, c.do("POST", "/v1/users", key, nil, map[string]string{"Idempotency-Key": "k1"}).status, "empty body")
+	assert.Equal(t, 200, c.json("GET", "/v1/users?limit=10", key, "").status)
+	assert.Equal(t, 200, c.json("GET", "/v1/users/"+user.ID, key, "").status)
+	r = c.json("POST", "/v1/users/"+user.ID+"/tokens", key, `{"scopes":["upload"]}`)
+	require.Equal(t, 201, r.status, "%s", r.body)
+	var tok struct{ Token string }
+	r.json(t, &tok)
+
+	// Every part of the fixture, then one again (duplicate).
+	parts, err := filepath.Glob(filepath.Join(fixtureDir, "*.ndjson"))
+	require.NoError(t, err)
+	require.NotEmpty(t, parts)
+	upload := func(path string) reply {
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var gz bytes.Buffer
+		w := gzip.NewWriter(&gz)
+		_, err = w.Write(raw)
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		part, typ, _ := strings.Cut(strings.TrimSuffix(filepath.Base(path), ".ndjson"), "_")
+		return c.do("POST", "/v1/ingest/apple-health", tok.Token, &gz, map[string]string{
+			"Content-Type": "application/gzip",
+			"X-OHS-Type":   typ, "X-OHS-Day": "2026-01-10", "X-OHS-Batch": "contract", "X-OHS-Part": part,
+		})
+	}
+	for _, p := range parts {
+		r := upload(p)
+		require.Equal(t, 200, r.status, "%s: %s", p, r.body)
+	}
+	assert.Equal(t, 200, upload(parts[0]).status)
+
+	// Coverage until processed (ruling R4).
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		r := c.json("GET", "/v1/users/"+user.ID+"/coverage", key, "")
+		require.Equal(t, 200, r.status, "%s", r.body)
+		var cov struct {
+			PendingJobs int `json:"pending_jobs"`
+		}
+		r.json(t, &cov)
+		if cov.PendingJobs == 0 {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "jobs still pending: %s", r.body)
+		time.Sleep(200 * time.Millisecond)
+	}
+	assert.Equal(t, 200, c.json("GET", "/v1/users/"+user.ID+"/coverage?provider=apple_health&start=2026-01-01&end=2026-02-01", key, "").status)
+
+	// Reads.
+	u := "/v1/users/" + user.ID
+	for _, p := range []string{
+		u + "/samples?type=heart_rate&limit=1000",
+		u + "/samples?type=step_count&start=2026-01-10&end=2026-01-12T00:00:00Z",
+		u + "/samples?type=oxygen_saturation",
+		u + "/category-samples",
+		u + "/nutrition",
+		u + "/daily",
+	} {
+		r := c.json("GET", p, key, "")
+		assert.Equal(t, 200, r.status, "%s: %s", p, r.body)
+	}
+	// Page through heart rate with a small limit to exercise next_cursor.
+	r = c.json("GET", u+"/samples?type=heart_rate&limit=100", key, "")
+	require.Equal(t, 200, r.status)
+	var page struct {
+		NextCursor *string `json:"next_cursor"`
+	}
+	r.json(t, &page)
+	require.NotNil(t, page.NextCursor)
+	assert.Equal(t, 200, c.json("GET", u+"/samples?type=heart_rate&limit=100&cursor="+*page.NextCursor, key, "").status)
+
+	r = c.json("GET", u+"/sleep", key, "")
+	require.Equal(t, 200, r.status)
+	var sleep struct{ Data []struct{ ID int64 } }
+	r.json(t, &sleep)
+	require.NotEmpty(t, sleep.Data)
+	assert.Equal(t, 200, c.json("GET", u+"/sleep/"+strconv.FormatInt(sleep.Data[0].ID, 10)+"/phases", key, "").status)
+
+	r = c.json("GET", u+"/workouts", key, "")
+	require.Equal(t, 200, r.status)
+	var workouts struct{ Data []struct{ ID int64 } }
+	r.json(t, &workouts)
+	require.NotEmpty(t, workouts.Data)
+	r = c.json("GET", u+"/workouts/"+strconv.FormatInt(workouts.Data[0].ID, 10)+"/route", key, "")
+	assert.Equal(t, 200, r.status, "a workout without GPS has an empty route: %s", r.body)
+	assert.JSONEq(t, `{"data":[],"next_cursor":null}`, string(r.body))
+
+	// Connections: an Apple Health user has none (device uploads are not connections).
+	r = c.json("GET", u+"/connections", key, "")
+	assert.Equal(t, 200, r.status, "%s", r.body)
+	assert.JSONEq(t, `{"data":[]}`, string(r.body))
+
+	// Refusals are documented problems too.
+	assert.Equal(t, 401, c.json("GET", "/v1/users", "", "").status)
+	assert.Equal(t, 401, c.json("GET", "/v1/users", "ohs_sk_unknown", "").status)
+	assert.Equal(t, 403, c.json("GET", "/v1/users", tok.Token, "").status)
+	assert.Equal(t, 404, c.json("GET", "/v1/users/00000000-0000-4000-8000-000000000000", key, "").status)
+	assert.Equal(t, 400, c.json("GET", u+"/samples?type=heart_rate&limit=5000", key, "").status)
+	assert.Equal(t, 400, c.json("GET", u+"/samples?type=heartrate", key, "").status, "unknown type")
+	assert.Equal(t, 400, c.json("POST", "/v1/users/"+user.ID+"/tokens", key, `{"scopes":["root"]}`).status)
+	assert.Equal(t, 409, c.json("POST", "/v1/users", key, `{"external_ref":"contract-user"}`).status)
+	assert.Equal(t, 400, c.do("POST", "/v1/ingest/apple-health", tok.Token, strings.NewReader("x"), map[string]string{
+		"Content-Type": "application/gzip", "X-OHS-Type": "HKQuantityTypeIdentifierHeartRate",
+		"X-OHS-Day": "2026-01-10", "X-OHS-Batch": "contract", "X-OHS-Part": "99",
+	}).status, "not gzip")
+
+	// Deletion, and its job read back until done.
+	r = c.json("DELETE", u, key, "")
+	require.Equal(t, 202, r.status, "%s", r.body)
+	var job struct {
+		JobID string `json:"job_id"`
+	}
+	r.json(t, &job)
+	assert.Equal(t, 404, c.json("GET", u, key, "").status)
+	assert.Equal(t, 404, c.json("GET", "/v1/deletions/00000000-0000-4000-8000-000000000000", key, "").status)
+	deadline = time.Now().Add(60 * time.Second)
+	for {
+		r = c.json("GET", "/v1/deletions/"+job.JobID, key, "")
+		require.Equal(t, 200, r.status, "%s", r.body)
+		var dj struct {
+			Status string `json:"status"`
+		}
+		r.json(t, &dj)
+		if dj.Status == "done" {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "deletion not done: %s", r.body)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	calls := rec.Calls()
+	require.NotEmpty(t, calls)
+	failed := 0
+	for _, call := range calls {
+		if len(call.Problems) == 0 {
+			continue
+		}
+		failed++
+		t.Errorf("%s %s -> %d (%s):\n  %s", call.Method, call.Path, call.Status, call.Operation,
+			strings.Join(call.Problems, "\n  "))
+	}
+	t.Logf("%d calls validated against api/openapi.yaml, %d with problems", len(calls), failed)
+
+	// Which documented operations this run exercised, and with which statuses.
+	statuses := map[string][]int{}
+	for _, call := range calls {
+		if call.Operation != "" && !slices.Contains(statuses[call.Operation], call.Status) {
+			statuses[call.Operation] = append(statuses[call.Operation], call.Status)
+		}
+	}
+	var covered, missed []string
+	for _, op := range rec.Operations() {
+		if st, ok := statuses[op]; ok {
+			slices.Sort(st)
+			covered = append(covered, fmt.Sprintf("%s %v", op, st))
+		} else {
+			missed = append(missed, op)
+		}
+	}
+	t.Logf("operations covered (%d of %d):\n  %s", len(covered), len(covered)+len(missed), strings.Join(covered, "\n  "))
+	t.Logf("operations not exercised: %s", strings.Join(missed, ", "))
+}

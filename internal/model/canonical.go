@@ -1,0 +1,319 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Package model defines the canonical health records every collector maps into
+// and the pure helpers around them: content hashing, unit canonicalization,
+// quantity vocabulary and source attribution. It has no I/O and no database
+// access, so the ETL and the tests can use it freely.
+package model
+
+import "time"
+
+// QuantitySample represents a single scalar health measurement.
+type QuantitySample struct {
+	TenantID string // owning tenant; set by the pipeline, not part of any content hash
+	UserID   string
+	Provider string // the integration that delivered the sample ("oura", "withings")
+	// SourceSlug is the upstream that actually PRODUCED it. Equal to Provider for a
+	// direct integration; for an aggregator it names the real sensor vendor, so
+	// fusion can rank the hardware instead of the pipe. See ResolveSourceSlug.
+	SourceSlug     string
+	SourceName     string
+	SourceBundleID string
+	DeviceID       string
+
+	// Provenance. DeviceID alone is
+	// HKDevice.name ("Apple Watch"), which no per-model accuracy row can match.
+	//
+	// ProductType is HKSourceRevision.productType ("Watch7,2"), the exact model,
+	// and it describes what RAN the writing app. DeviceModel is HKDevice.model
+	// and describes what TOOK the reading. They differ whenever a phone app
+	// writes a paired sensor's output, so they are kept apart.
+	ProductType string
+	DeviceModel string
+
+	// WasUserEntered is a pointer because absent is a third state, distinct from
+	// false: every row written before this existed genuinely does not know, and
+	// storing that as "measured" would be the same fabrication this whole
+	// provenance model is meant to prevent.
+	WasUserEntered *bool
+
+	ExternalID      string
+	QuantityType    string // Canonical: "heart_rate", "step_count", etc.
+	Value           float64
+	Unit            string // Canonical: "bpm", "count", "kg", etc.
+	IsPrimarySource bool
+	StartDate       time.Time
+	EndDate         time.Time
+	ContentHash     string
+	Metadata        map[string]any // Original fields + timezone
+
+	// Replaceable is an instruction to the writer, not a column. It marks a figure
+	// the upstream re-sends with a newer value while its window is still open (a
+	// day's running step count), whose ContentHash therefore leaves the value out:
+	// on conflict the stored value is replaced by this one instead of this one
+	// being skipped as a duplicate. Everything else stays first-write-wins.
+	Replaceable bool
+}
+
+// CategorySample represents a categorical health event.
+type CategorySample struct {
+	TenantID     string // owning tenant; set by the pipeline, not part of any content hash
+	UserID       string
+	Provider     string
+	ExternalID   string
+	CategoryType string // Canonical: "menstrual_flow", "high_heart_rate_event", etc.
+	ValueInt     int
+	ValueLabel   string
+	StartDate    time.Time
+	EndDate      time.Time
+	SourceName   string
+	ContentHash  string
+	Metadata     map[string]any
+}
+
+// SleepSession represents a structured sleep record with duration breakdowns.
+type SleepSession struct {
+	TenantID          string // owning tenant; set by the pipeline, not part of any content hash
+	UserID            string
+	Provider          string
+	ExternalID        string
+	BedtimeStart      time.Time
+	BedtimeEnd        time.Time
+	TotalSleepSeconds *int
+	DeepSleepSeconds  *int
+	REMSleepSeconds   *int
+	LightSleepSeconds *int
+	AwakeSeconds      *int
+	SleepScore        *float64
+	HRVAvgMs          *float64
+	RestingHR         *float64
+	RespiratoryRate   *float64
+	SpO2Avg           *float64
+	ContentHash       string
+	Metadata          map[string]any
+}
+
+// SleepPhase represents a single phase within a sleep session.
+type SleepPhase struct {
+	TenantID string // owning tenant; set by the pipeline, not part of any content hash
+	// SessionID is set by the writer after the parent row is inserted.
+	UserID            string
+	Phase             string // "deep", "rem", "light", "awake", "in_bed", "asleep_core", etc.
+	StartDate         time.Time
+	EndDate           time.Time
+	DurationS         int
+	ParentContentHash string // Matches parent SleepSession.ContentHash; empty if orphan
+	ContentHash       string // Set by the writer via SleepPhaseContentHash for dedup
+}
+
+// Workout represents a workout session with performance metrics.
+type Workout struct {
+	TenantID         string // owning tenant; set by the pipeline, not part of any content hash
+	UserID           string
+	Provider         string
+	ExternalID       string
+	ActivityType     string // Canonical: "running", "cycling", etc.
+	StartDate        time.Time
+	EndDate          time.Time
+	DurationS        *int
+	ActiveEnergyKcal *float64
+	DistanceM        *float64
+	AvgHeartRate     *float64
+	MaxHeartRate     *float64
+	AvgSpeedMps      *float64
+	ElevationGainM   *float64
+	VO2Max           *float64
+	ContentHash      string
+	Metadata         map[string]any
+}
+
+// RoutePoint represents a GPS coordinate from a workout route.
+type RoutePoint struct {
+	TenantID string // owning tenant; set by the pipeline, not part of any content hash
+	// WorkoutID is set by the writer after the parent row is inserted.
+	UserID            string
+	Timestamp         time.Time
+	Latitude          float64
+	Longitude         float64
+	AltitudeM         *float64
+	SpeedMps          *float64
+	CourseDeg         *float64
+	ParentContentHash string // Matches parent Workout.ContentHash; empty if orphan
+	ContentHash       string // Set by the writer via RoutePointContentHash for dedup
+}
+
+// NutritionLog represents a nutrition/dietary record.
+type NutritionLog struct {
+	TenantID      string // owning tenant; set by the pipeline, not part of any content hash
+	UserID        string
+	Provider      string
+	ExternalID    string
+	StartDate     time.Time
+	EndDate       *time.Time
+	MealType      string
+	EnergyKcal    *float64
+	ProteinG      *float64
+	CarbsG        *float64
+	FatG          *float64
+	FiberG        *float64
+	SugarG        *float64
+	SodiumMg      *float64
+	NutrientsJSON map[string]any // Extended nutrients
+	ContentHash   string
+	Metadata      map[string]any
+
+	// Replaceable: see QuantitySample.Replaceable. A figure the re-send omits
+	// keeps its stored value rather than being cleared.
+	Replaceable bool
+}
+
+// ECGRecording represents ECG metadata (voltage data is in ECGVoltageSample).
+type ECGRecording struct {
+	TenantID             string // owning tenant; set by the pipeline, not part of any content hash
+	UserID               string
+	StartDate            time.Time
+	EndDate              time.Time
+	Classification       int
+	SymptomsStatus       int
+	AverageHeartRate     *float64
+	SamplingFrequency    float64
+	NumberOfMeasurements int
+	VoltagePath          string
+	ContentHash          string
+	Metadata             map[string]any
+}
+
+// ECGVoltageSample represents a single voltage measurement from an ECG recording.
+type ECGVoltageSample struct {
+	TenantID             string // owning tenant; set by the pipeline, not part of any content hash
+	ECGID                string
+	UserID               string
+	TimeSinceSampleStart float64
+	VoltageUV            float64 // Microvolts (converted from volts)
+	ParentContentHash    string  // Matches parent ECGRecording.ContentHash; empty if orphan
+	ContentHash          string  // Set by the writer via ECGVoltageSampleContentHash for dedup
+}
+
+// DailySummary represents an aggregated daily score from a provider.
+type DailySummary struct {
+	TenantID       string // owning tenant; set by the pipeline, not part of any content hash
+	UserID         string
+	Provider       string
+	SummaryDate    time.Time // Date only (time component is midnight UTC)
+	ReadinessScore *float64
+	ActivityScore  *float64
+	SleepScore     *float64
+	RecoveryScore  *float64
+	StrainScore    *float64
+	StepCount      *int
+	ActiveKcal     *float64
+	TotalKcal      *float64
+	DistanceM      *float64
+	FloorsClimbed  *int
+	RestingHR      *float64
+	HRVAvgMs       *float64
+	ContentHash    string
+	Metadata       map[string]any
+
+	// Replaceable: see QuantitySample.Replaceable. A figure the re-send omits
+	// keeps its stored value rather than being cleared.
+	Replaceable bool
+}
+
+// HeartbeatSample represents a single beat-to-beat RR interval measurement.
+type HeartbeatSample struct {
+	TenantID    string // owning tenant; set by the pipeline, not part of any content hash
+	SeriesID    string
+	UserID      string
+	Timestamp   time.Time
+	RRMS        float64 // RR interval in milliseconds
+	ContentHash string  // Set by the writer via HeartbeatSampleContentHash for dedup
+}
+
+// Observation is a generic coded health fact (the long-tail catch-all). The "attribute"
+// is a controlled canonical_code (not free EAV text); the value is a typed slot
+// (num/code/text); the unit is UCUM. Any metric without a dedicated typed table lands
+// here with zero schema change. Mirrors OMOP MEASUREMENT/OBSERVATION + FHIR Observation.
+type Observation struct {
+	TenantID        string // owning tenant; set by the pipeline, not part of any content hash
+	UserID          string
+	TS              time.Time
+	EndTS           time.Time // zero value => NULL
+	CanonicalCode   string
+	ValueNum        *float64
+	ValueCode       string // categorical, coded
+	ValueText       string
+	UnitUCUM        string
+	ValueCanonical  *float64 // value normalized to the base UCUM unit (cross-source compare)
+	Provider        string
+	SourceName      string
+	DeviceID        string
+	IsPrimarySource bool
+	TypeConcept     string // device | survey | ehr | derived (provenance)
+	SourceValue     string // verbatim provider key (audit / re-mapping)
+	S3Ref           string // pointer if a blob backs this observation
+	ContentHash     string // Set via ObservationContentHash for dedup
+	Metadata        map[string]any
+}
+
+// MapResult holds all canonical records produced from a single input record.
+// Most records produce output for exactly one table, but some (e.g., sleep
+// with phases) produce records for multiple tables.
+type MapResult struct {
+	QuantitySamples  []QuantitySample
+	CategorySamples  []CategorySample
+	SleepSessions    []SleepSession
+	SleepPhases      []SleepPhase
+	Workouts         []Workout
+	RoutePoints      []RoutePoint
+	NutritionLogs    []NutritionLog
+	ECGRecordings    []ECGRecording
+	ECGSamples       []ECGVoltageSample
+	HeartbeatSamples []HeartbeatSample
+	DailySummaries   []DailySummary
+	Observations     []Observation
+
+	// HighFrequency signals to the pipeline that this result contains
+	// high-volume data that should use COPY protocol for writes.
+	HighFrequency bool
+
+	// SourceKey is the raw object this batch was mapped from. It is the only
+	// identity a child record has when its parent arrived in a DIFFERENT object,
+	// which is the normal case for Apple Health ECG voltage: the metadata record
+	// uploads separately and stores this key in ecg_recordings.voltage_path.
+	// Empty for callers that do not track an origin object; the writer must then
+	// skip rather than guess a parent.
+	SourceKey string
+}
+
+// IsEmpty returns true if no canonical records were produced.
+func (r *MapResult) IsEmpty() bool {
+	return len(r.QuantitySamples) == 0 &&
+		len(r.CategorySamples) == 0 &&
+		len(r.SleepSessions) == 0 &&
+		len(r.SleepPhases) == 0 &&
+		len(r.Workouts) == 0 &&
+		len(r.RoutePoints) == 0 &&
+		len(r.NutritionLogs) == 0 &&
+		len(r.ECGRecordings) == 0 &&
+		len(r.ECGSamples) == 0 &&
+		len(r.HeartbeatSamples) == 0 &&
+		len(r.DailySummaries) == 0 &&
+		len(r.Observations) == 0
+}
+
+// RecordCount returns the total number of canonical records in the result.
+func (r *MapResult) RecordCount() int {
+	return len(r.QuantitySamples) +
+		len(r.CategorySamples) +
+		len(r.SleepSessions) +
+		len(r.SleepPhases) +
+		len(r.Workouts) +
+		len(r.RoutePoints) +
+		len(r.NutritionLogs) +
+		len(r.ECGRecordings) +
+		len(r.ECGSamples) +
+		len(r.HeartbeatSamples) +
+		len(r.DailySummaries) +
+		len(r.Observations)
+}

@@ -1,0 +1,22 @@
+{
+  "startDate": "2026-01-10T08:00:00.000000000Z",
+  "endDate": "2026-01-10T08:30:00.250000119Z",
+  "workoutActivityType": 52,
+  "durationS": 1800.2500001192093,
+  "totalEnergyBurned": 200.0,
+  "totalEnergyBurnedUnit": "kcal",
+  "totalDistance": 2000.5,
+  "totalDistanceUnit": "m",
+  "averageHeartRate": 120.0,
+  "minHeartRate": 90.0,
+  "maxHeartRate": 150.0,
+  "avgSpeedMps": 1.25,
+  "elevationGainM": 10.5,
+  "sourceName": "Example Fitness",
+  "sourceBundleId": "com.example.fitness",
+  "metadata": {
+    "HKAverageSpeed": "1.25 m/s",
+    "HKElevationAscended": "10.5 m",
+    "HKIndoorWorkout": "0"
+  }
+}

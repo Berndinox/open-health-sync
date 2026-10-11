@@ -1,0 +1,24 @@
+{
+  "startDate": "2025-03-01T08:00:00Z",
+  "endDate": "2025-03-01T08:00:00Z",
+  "correlationType": "HKCorrelationTypeIdentifierBloodPressure",
+  "sourceName": "Example BP Monitor",
+  "sourceBundleId": "com.example.bp",
+  "device": "Example BP Monitor",
+  "objects": [
+    {
+      "sampleType": "HKQuantityTypeIdentifierBloodPressureSystolic",
+      "startDate": "2025-03-01T08:00:00Z",
+      "endDate": "2025-03-01T08:00:00Z",
+      "value": 120.0,
+      "unit": "mmHg"
+    },
+    {
+      "sampleType": "HKQuantityTypeIdentifierBloodPressureDiastolic",
+      "startDate": "2025-03-01T08:00:00Z",
+      "endDate": "2025-03-01T08:00:00Z",
+      "value": 80.0,
+      "unit": "mmHg"
+    }
+  ]
+}

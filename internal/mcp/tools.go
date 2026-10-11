@@ -1,0 +1,362 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"time"
+
+	"github.com/google/uuid"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/soma-intelligence/open-health-sync/internal/api/read"
+	"github.com/soma-intelligence/open-health-sync/internal/auth"
+	"github.com/soma-intelligence/open-health-sync/internal/tenant"
+)
+
+// Arguments. They mirror the REST query parameters.
+
+type userArgs struct {
+	UserID string `json:"user_id,omitempty" jsonschema:"the user to read (required with a tenant API key; with a user token omit it or pass the token's own user)"`
+}
+
+type pageArgs struct {
+	Cursor string `json:"cursor,omitempty" jsonschema:"next_cursor of the previous call, to continue a truncated list"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"page size, default 100, at most 1000"`
+}
+
+type windowArgs struct {
+	Start string `json:"start,omitempty" jsonschema:"inclusive lower bound, RFC 3339 or YYYY-MM-DD (UTC midnight)"`
+	End   string `json:"end,omitempty" jsonschema:"exclusive upper bound, RFC 3339 or YYYY-MM-DD (UTC midnight)"`
+}
+
+type listArgs struct {
+	userArgs
+	windowArgs
+	pageArgs
+}
+
+type typedArgs struct {
+	userArgs
+	Type string `json:"type,omitempty" jsonschema:"filter on this type"`
+	windowArgs
+	pageArgs
+}
+
+type samplesArgs struct {
+	userArgs
+	Type string `json:"type" jsonschema:"canonical quantity type, for example heart_rate or step_count (see list_quantity_types)"`
+	windowArgs
+	pageArgs
+}
+
+type sleepArgs struct {
+	userArgs
+	SessionID int64 `json:"session_id,omitempty" jsonschema:"when set, list the phases of this sleep session instead of the sessions"`
+	windowArgs
+	pageArgs
+}
+
+type routeArgs struct {
+	userArgs
+	WorkoutID int64 `json:"workout_id" jsonschema:"the workout (id from get_workouts)"`
+	windowArgs
+	pageArgs
+}
+
+type coverageArgs struct {
+	userArgs
+	Provider string `json:"provider,omitempty" jsonschema:"filter on one provider, for example apple_health"`
+	windowArgs
+}
+
+type noArgs struct{}
+
+// Results: JSON text content, records plus the cursor to continue.
+
+type page[T any] struct {
+	Records    []T     `json:"records"`
+	NextCursor *string `json:"next_cursor"`
+	Truncated  bool    `json:"truncated"`
+}
+
+func newPage[T any](records []T, next string) page[T] {
+	if records == nil {
+		records = []T{}
+	}
+	p := page[T]{Records: records, Truncated: next != ""}
+	if next != "" {
+		p.NextCursor = &next
+	}
+	return p
+}
+
+type coveragePage struct {
+	page[read.CoverageDay]
+	PendingJobs     int64 `json:"pending_jobs"`
+	ParkedJobs      int64 `json:"parked_jobs"`
+	RejectedRecords int64 `json:"rejected_records"`
+}
+
+type user struct {
+	ID          uuid.UUID `json:"id"`
+	ExternalRef *string   `json:"external_ref"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// toolError is a refusal the caller can act on; its text is the message.
+type toolError string
+
+func (e toolError) Error() string { return string(e) }
+
+const errUserNotFound = toolError("user not found")
+
+var errLimit = toolError(fmt.Sprintf("limit must be between 1 and %d (default %d)", read.MaxLimit, read.DefaultLimit))
+
+type tools struct {
+	d Deps
+	p auth.Principal
+}
+
+func addTools(s *sdk.Server, t *tools) {
+	add(s, "list_users", "List the users of the tenant (tenant API key only), oldest first.", t.listUsers)
+	add(s, "list_quantity_types", "List the quantity types the server knows, with the unit their samples are stored in. Use them as the type of get_samples.", t.quantityTypes)
+	add(s, "get_samples", "Quantity samples of one type (heart rate, steps, weight...), oldest first.",
+		func(ctx context.Context, a samplesArgs) (any, error) {
+			return listTool(ctx, t, a.userArgs, read.Query{Type: a.Type}, a.windowArgs, a.pageArgs, read.Samples)
+		})
+	add(s, "get_category_samples", "Category samples (events with a categorical value, such as mindful sessions), oldest first.",
+		func(ctx context.Context, a typedArgs) (any, error) {
+			return listTool(ctx, t, a.userArgs, read.Query{Type: a.Type}, a.windowArgs, a.pageArgs, read.CategorySamples)
+		})
+	add(s, "get_sleep", "Sleep sessions by bedtime, oldest first; with session_id, the phases of that session.",
+		func(ctx context.Context, a sleepArgs) (any, error) {
+			if a.SessionID != 0 {
+				return childTool(ctx, t, a.userArgs, a.SessionID, a.windowArgs, a.pageArgs, read.SleepPhases, "sleep session not found")
+			}
+			return listTool(ctx, t, a.userArgs, read.Query{}, a.windowArgs, a.pageArgs, read.Sleep)
+		})
+	add(s, "get_workouts", "Workouts, oldest first; type filters on the activity type.",
+		func(ctx context.Context, a typedArgs) (any, error) {
+			return listTool(ctx, t, a.userArgs, read.Query{Type: a.Type}, a.windowArgs, a.pageArgs, read.Workouts)
+		})
+	add(s, "get_workout_route", "GPS route points of one workout, in time order.",
+		func(ctx context.Context, a routeArgs) (any, error) {
+			return childTool(ctx, t, a.userArgs, a.WorkoutID, a.windowArgs, a.pageArgs, read.WorkoutRoute, "workout not found")
+		})
+	add(s, "get_nutrition", "Nutrition logs (meals and their macronutrients), oldest first.",
+		func(ctx context.Context, a listArgs) (any, error) {
+			return listTool(ctx, t, a.userArgs, read.Query{}, a.windowArgs, a.pageArgs, read.Nutrition)
+		})
+	add(s, "get_daily", "Daily summaries (scores, steps, energy, resting heart rate, HRV) per local day, oldest first.",
+		func(ctx context.Context, a listArgs) (any, error) {
+			return listTool(ctx, t, a.userArgs, read.Query{}, a.windowArgs, a.pageArgs, read.Daily)
+		})
+	add(s, "get_coverage", "What has been synced: records per provider per local day with per metric counts, and the processing jobs still pending.", t.coverage)
+	add(s, "list_connections", "The user's provider connections with their status and last sync time.", t.connections)
+}
+
+// add registers a tool whose handler returns the result value or an error.
+// A toolError reaches the caller as is; any other error is logged and
+// reported as an internal error, so no infrastructure detail leaks.
+func add[In any](s *sdk.Server, name, desc string, fn func(context.Context, In) (any, error)) {
+	sdk.AddTool(s, &sdk.Tool{Name: name, Description: desc, Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true}},
+		func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, any, error) {
+			out, err := fn(ctx, in)
+			if err != nil {
+				var te toolError
+				if !errors.As(err, &te) {
+					slog.ErrorContext(ctx, "mcp: tool failed", "tool", name, "error", err)
+					err = toolError("internal error, try again later")
+				}
+				return nil, nil, err
+			}
+			raw, err := json.Marshal(out)
+			if err != nil {
+				slog.ErrorContext(ctx, "mcp: encode result", "tool", name, "error", err)
+				return nil, nil, toolError("internal error, try again later")
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: string(raw)}}}, nil, nil
+		})
+}
+
+// user resolves the user a call reads. A tenant key must name one; a user
+// token reads its own user and nothing else.
+func (t *tools) user(a userArgs) (uuid.UUID, error) {
+	if t.p.UserID != nil {
+		if !slices.Contains(t.p.Scopes, string(auth.UserRead)) {
+			return uuid.Nil, toolError("this token has no read scope")
+		}
+		if a.UserID == "" {
+			return *t.p.UserID, nil
+		}
+		if id, err := uuid.Parse(a.UserID); err == nil && id == *t.p.UserID {
+			return id, nil
+		}
+		return uuid.Nil, toolError("a user token reads only its own user: omit user_id")
+	}
+	if a.UserID == "" {
+		return uuid.Nil, toolError("user_id is required with a tenant API key (see list_users)")
+	}
+	id, err := uuid.Parse(a.UserID)
+	if err != nil {
+		return uuid.Nil, errUserNotFound
+	}
+	return id, nil
+}
+
+func query(q read.Query, w windowArgs, p pageArgs) (read.Query, error) {
+	if p.Limit < 0 || p.Limit > read.MaxLimit {
+		return q, errLimit
+	}
+	q.Limit, q.Cursor = p.Limit, p.Cursor
+	var err error
+	if q.Start, err = parseTime("start", w.Start); err != nil {
+		return q, err
+	}
+	if q.End, err = parseTime("end", w.End); err != nil {
+		return q, err
+	}
+	return q, nil
+}
+
+// parseTime accepts RFC 3339 or a calendar date (midnight UTC), like the REST
+// API; empty is an open bound.
+func parseTime(name, v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse(time.DateOnly, v); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, toolError(name + " is not an RFC 3339 time or a YYYY-MM-DD date")
+}
+
+// readErr maps a read layer error; notFound names what was missing.
+func readErr(err error, notFound toolError) error {
+	var qe *read.QueryError
+	switch {
+	case errors.As(err, &qe):
+		return toolError(qe.Msg)
+	case errors.Is(err, read.ErrInvalidCursor):
+		return toolError("the cursor is not valid")
+	case errors.Is(err, read.ErrNotFound):
+		return notFound
+	}
+	return err
+}
+
+type listFunc[T any] func(context.Context, read.Querier, uuid.UUID, uuid.UUID, read.Query) (read.Page[T], error)
+
+type childFunc[T any] func(context.Context, read.Querier, uuid.UUID, uuid.UUID, int64, read.Query) (read.Page[T], error)
+
+func listTool[T any](ctx context.Context, t *tools, u userArgs, q read.Query, w windowArgs, p pageArgs, fn listFunc[T]) (any, error) {
+	id, err := t.user(u)
+	if err != nil {
+		return nil, err
+	}
+	if q, err = query(q, w, p); err != nil {
+		return nil, err
+	}
+	pg, err := fn(ctx, t.d.DB, t.p.TenantID, id, q)
+	if err != nil {
+		return nil, readErr(err, errUserNotFound)
+	}
+	return newPage(pg.Records, pg.NextCursor), nil
+}
+
+func childTool[T any](ctx context.Context, t *tools, u userArgs, parent int64, w windowArgs, p pageArgs, fn childFunc[T], notFound toolError) (any, error) {
+	id, err := t.user(u)
+	if err != nil {
+		return nil, err
+	}
+	q, err := query(read.Query{}, w, p)
+	if err != nil {
+		return nil, err
+	}
+	pg, err := fn(ctx, t.d.DB, t.p.TenantID, id, parent, q)
+	if err != nil {
+		// The read layer answers ErrNotFound for an unknown user and for a
+		// parent that is not the user's alike; both read as the parent here.
+		return nil, readErr(err, notFound)
+	}
+	return newPage(pg.Records, pg.NextCursor), nil
+}
+
+func (t *tools) listUsers(ctx context.Context, a pageArgs) (any, error) {
+	if t.p.UserID != nil {
+		return nil, toolError("list_users needs a tenant API key")
+	}
+	if a.Limit < 0 || a.Limit > read.MaxLimit {
+		return nil, errLimit
+	}
+	users, next, err := t.d.Store.ListUsers(ctx, t.p.TenantID, a.Cursor, a.Limit)
+	if errors.Is(err, tenant.ErrInvalidCursor) {
+		return nil, toolError("the cursor is not valid")
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]user, 0, len(users))
+	for _, u := range users {
+		v := user{ID: u.ID, Status: u.Status, CreatedAt: u.CreatedAt.UTC()}
+		if u.ExternalRef != "" {
+			ref := u.ExternalRef
+			v.ExternalRef = &ref
+		}
+		out = append(out, v)
+	}
+	return newPage(out, next), nil
+}
+
+func (t *tools) quantityTypes(ctx context.Context, _ noArgs) (any, error) {
+	types, err := read.QuantityTypes(ctx, t.d.DB)
+	if err != nil {
+		return nil, err
+	}
+	return newPage(types, ""), nil
+}
+
+func (t *tools) coverage(ctx context.Context, a coverageArgs) (any, error) {
+	id, err := t.user(a.userArgs)
+	if err != nil {
+		return nil, err
+	}
+	q := read.CoverageQuery{Provider: a.Provider}
+	if q.Start, err = parseTime("start", a.Start); err != nil {
+		return nil, err
+	}
+	if q.End, err = parseTime("end", a.End); err != nil {
+		return nil, err
+	}
+	c, err := read.UserCoverage(ctx, t.d.DB, t.p.TenantID, id, q)
+	if err != nil {
+		return nil, readErr(err, errUserNotFound)
+	}
+	// Coverage is capped, not paged: a truncated report is narrowed with
+	// start and end, so there is no cursor.
+	pg := newPage(c.Days, "")
+	pg.Truncated = c.Truncated
+	return coveragePage{page: pg, PendingJobs: c.PendingJobs, ParkedJobs: c.ParkedJobs, RejectedRecords: c.RejectedRecords}, nil
+}
+
+func (t *tools) connections(ctx context.Context, a userArgs) (any, error) {
+	id, err := t.user(a)
+	if err != nil {
+		return nil, err
+	}
+	cs, err := read.Connections(ctx, t.d.DB, t.p.TenantID, id)
+	if err != nil {
+		return nil, readErr(err, errUserNotFound)
+	}
+	return newPage(cs, ""), nil
+}

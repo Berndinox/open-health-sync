@@ -1,0 +1,9 @@
+{
+  "status": 0,
+  "body": {
+    "series": {
+      "1772359200": {"steps": 100, "elevation": 0, "calories": 5, "distance": 80, "heart_rate": 90, "duration": 60, "deviceid": "fake-watch-0001"},
+      "1772445600": {"steps": 200, "elevation": 0, "calories": 10, "distance": 160, "heart_rate": 0, "duration": 60, "deviceid": "fake-watch-0001"}
+    }
+  }
+}

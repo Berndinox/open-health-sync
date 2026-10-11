@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="96" viewBox="0 0 440 96" role="img" aria-label="Open Health Sync">
+  <title>Open Health Sync</title>
+  <g fill="none" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 26 C30 26 34 48 50 48" stroke="#eef0f3"/>
+    <path d="M10 70 C30 70 34 48 50 48" stroke="#eef0f3"/>
+    <path d="M50 48 H60 L66 32 L74 64 L80 48 H90" stroke="#2fd3bd"/>
+  </g>
+  <text x="108" y="61" fill="#eef0f3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="38" font-weight="600" letter-spacing="-0.5">Open Health Sync</text>
+</svg>

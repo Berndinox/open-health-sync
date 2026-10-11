@@ -1,0 +1,12 @@
+{
+  "startDate": "2025-03-01T14:30:00Z",
+  "endDate": "2025-03-01T14:30:03Z",
+  "uuid": "00000000-0000-4000-8000-0000000000aa",
+  "heartbeats": [
+    {"timeSinceSeriesStart": 0.0, "precededByGap": false},
+    {"timeSinceSeriesStart": 0.856, "precededByGap": false},
+    {"timeSinceSeriesStart": 1.7, "precededByGap": false},
+    {"timeSinceSeriesStart": 2.55, "precededByGap": false}
+  ],
+  "metadata": {"HKTimeZone": "Europe/Paris"}
+}

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Overlay: build the ohs image from this checkout instead of pulling the
+# published one. Needs docker buildx (the Dockerfile uses BuildKit syntax).
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
+# Without buildx, `--build` fails with `failed to parse platform : "" is an
+# invalid OS component`: build the image with scripts/image-without-buildx.sh,
+# then run the same command without --build.
+# The local image is tagged ohs:local, so it never shadows a published tag.
+services:
+  ohs:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ohs:local
