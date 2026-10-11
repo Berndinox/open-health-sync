@@ -119,7 +119,15 @@ func TestHeartbeatSingleBeatSeriesIsEmpty(t *testing.T) {
 func TestHeartbeatNonIncreasingBeatsCounted(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		// Drop the timestamp: its digits could contain a beat time by chance.
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	m := New()
