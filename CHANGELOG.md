@@ -7,6 +7,37 @@ release may change the API, the configuration or the database schema.
 
 ## [Unreleased]
 
+### Added
+
+- `ohs admin tenant list`, `ohs admin key create`, `key list` and `key revoke`: rotate a
+  tenant API key without touching the database by hand.
+- `GET /openapi.yaml` serves the OpenAPI description of the running version, readable from
+  any origin, to import into Postman, Swagger UI or Redoc.
+- `X-Request-Id` on every API response (the caller's own is kept when well formed), repeated
+  as `request_id` in problem bodies and on every log line about the request.
+- `ohs help`, `ohs help <command>`, `-h`/`--help` on every command and `ohs --version`.
+
+### Changed
+
+- Logs write durations as text (`24h0m0s`) instead of nanoseconds, and `ohs started` names
+  the version.
+- `ohs mcp` says what a refused handshake means (401: the key; 403: the scope; 404 or 405:
+  the URL) instead of `cannot reach`.
+- MCP server instructions and the `get_samples` description steer agents to `get_daily` for
+  trends and to narrow windows for raw samples.
+- A known API path called with the wrong method answers 405 with an `Allow` header instead of
+  404 `route not found`.
+- A 403 names the credential the endpoint takes (a tenant API key, or a user token with a
+  given scope).
+- A command line error (unknown command, wrong arguments) exits 2; other failures still exit 1.
+- `ohs serve` and `ohs doctor` refuse an `OHS_PUBLIC_URL` that is not an absolute http(s) URL
+  (or has a query or fragment) and an unknown `OHS_LOG_LEVEL` at load, and an
+  `OHS_ENCRYPTION_KEY` error says how to generate a key.
+- `ohs serve` checks at start that the raw store accepts writes (a probe object outside `raw/`,
+  deleted at once) and stops with a hint instead of failing every upload; `ohs doctor` runs
+  the same check (not `--quick`). A database it cannot reach, or a listen address already in
+  use, now names the variable to check.
+
 ## [0.0.1] - 2026-10-11
 
 First public release, an early preview. See the

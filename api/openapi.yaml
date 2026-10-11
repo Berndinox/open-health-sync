@@ -22,6 +22,10 @@ info:
     **Errors** are RFC 9457 `application/problem+json`. A user, workout or sleep session
     of another tenant is a 404, never a 403.
 
+    **Request ids.** Every response carries `X-Request-Id` (the caller's own when it is 1
+    to 128 letters, digits, `-`, `_` or `.`, else a fresh one); a problem body repeats it as
+    `request_id`, and the server logs carry it too.
+
     **Idempotency.** `Idempotency-Key` (1 to 255 characters) is honoured on
     `POST /v1/users`: a retry with the same key and the same request within 24 hours gets the first response back, with
     `Idempotent-Replayed: true`. The same key with another request is a 422; a retry while
@@ -31,7 +35,8 @@ info:
     name: AGPL-3.0-only
     identifier: AGPL-3.0-only
 servers:
-  - url: http://localhost:8080
+  - url: /
+    description: The instance serving this document (GET /openapi.yaml), or set your own.
 tags:
   - name: providers
   - name: users
@@ -693,6 +698,20 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: ok }
+  /openapi.yaml:
+    get:
+      tags: [ops]
+      operationId: openapi
+      summary: This OpenAPI description, as served by this version
+      description: Readable from any origin (`Access-Control-Allow-Origin` is `*`), so a hosted
+        Swagger UI, Redoc or Postman can import it by URL.
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema: { type: string }
   /readyz:
     get:
       tags: [ops]
@@ -835,6 +854,9 @@ components:
         title: { type: string }
         status: { type: integer }
         detail: { type: string }
+        request_id:
+          type: string
+          description: The X-Request-Id of the response, to quote when reporting the error.
 
     PageBase:
       type: object

@@ -4,6 +4,12 @@
 response shape. This guide explains how the pieces fit. Examples assume
 `OHS=http://localhost:8080` and a tenant key in `KEY`.
 
+A running server serves the description of its own version at `GET /openapi.yaml`, without
+credentials and readable from any origin. Import `$OHS/openapi.yaml` by URL into Postman
+(Import, Link), Insomnia or [editor.swagger.io](https://editor.swagger.io) (File, Import URL),
+or render a local page with `npx @redocly/cli build-docs $OHS/openapi.yaml`. The server has no
+documentation page of its own, so it never loads third party scripts next to health data.
+
 ## Credentials
 
 Every call carries `Authorization: Bearer <secret>`.
@@ -44,6 +50,10 @@ configuration. The response is `Cache-Control: no-store`; the token is shown onc
   `{"type":"about:blank","title":"Bad Request","status":400,"detail":"..."}`.
   A user, workout or sleep session of another tenant is a 404, never a 403. A 401 carries
   `WWW-Authenticate: Bearer`.
+- **Request ids.** Every response carries `X-Request-Id`, and a problem body repeats it as
+  `request_id`. Send your own `X-Request-Id` (1 to 128 letters, digits, `-`, `_`, `.`) to have
+  it kept, for example your proxy's. Every log line about the call carries it as `request_id`,
+  so quote it when you ask the operator about a failed call.
 - **Idempotency.** Send `Idempotency-Key` (1 to 255 characters) on `POST /v1/users`. A retry with the same key and request within
   24 hours gets the first response back with `Idempotent-Replayed: true`. The same key with a
   different request is a 422; a retry while the first call still runs is a 409. Other routes
