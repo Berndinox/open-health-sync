@@ -9,6 +9,8 @@ release may change the API, the configuration or the database schema.
 
 ### Added
 
+- A reproducible ingestion benchmark against Open Wearables: `bench/openwearables/` and
+  [the method and results](docs/benchmarks/open-wearables.md).
 - MCP prompts: the prompt library is now served by the MCP server (`prompts/list`,
   `prompts/get`). Twelve ready-made questions about a person's own training, sleep and recovery
   (morning check, taper check, after a break, a new habit, two devices side by side...), each
