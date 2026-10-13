@@ -35,6 +35,12 @@ release may change the API, the configuration or the database schema.
   runs, and prints how many it rewrote, found current or could not open (left as they are).
   `ohs doctor` counts the secrets still under a previous or unknown key and says when the
   previous keys can go. See [docs/key-rotation.md](docs/key-rotation.md).
+- Signed releases: the release workflow signs the image by digest and the binaries'
+  `checksums.txt` (bundle `checksums.txt.sigstore.json` on the release) with Sigstore cosign,
+  keyless, using the workflow's GitHub OIDC identity. Verification commands are in
+  [SECURITY.md](SECURITY.md#verifying-releases).
+- Docs: [security model](docs/security-model.md) (assets, trust boundaries, mitigations with
+  their code, residual risks) and a [hardening checklist](docs/hardening.md) for production.
 
 ### Changed
 
