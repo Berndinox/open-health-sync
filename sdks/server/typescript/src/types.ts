@@ -1295,6 +1295,12 @@ export interface IngestHealthConnectResponse {
   duplicate: boolean;
 }
 
+export interface IngestXiaomiResponse {
+  /** Raw object key. */
+  key: string;
+  duplicate: boolean;
+}
+
 export interface ListAuditEventsResponse {
   data: AuditEvent[];
   /** Null on the last page. */
