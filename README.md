@@ -429,6 +429,21 @@ flowchart LR
 
 Details: [architecture](docs/architecture.md), [API guide](docs/api.md).
 
+### A provider is turned on, then a user connects
+
+In the admin console you paste the keys of your Oura app and Oura is on, with no restart. Your
+app then creates a connection link and sends its user to it. The user picks Oura, then Withings,
+and allows access at each. `ohs` exchanges the code, stores the grant encrypted, pulls the history
+in the background and normalizes it. Back in the console, the pipeline shows the data moving
+through and the user's page shows each source active and fresh.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/demo/flow-dark.gif">
+  <img src="docs/demo/flow-light.gif" width="100%" alt="Browser recording. In the admin console of a fresh instance, the overview shows the pipeline as five stages, all at zero. On the Oura page, not set up yet, the operator pastes a client ID and secret and saves them: Oura is on. The app Sleep Diary then opens a connection link for its user: a page in frosted glass panels lists Oura, WHOOP, Withings, Polar and Strava, with 0 of 5 connected and 30 minutes left on the link. The user connects Oura: a consent screen marked as a test server lists the scopes, Allow leads to Oura is connected, and back on the page Oura shows as connected. Withings follows. Back in the console, the overview counts 2 connections, the sync runs and the raw data stored, and the user's page shows both connections active and healthy, with 51 records over 3 days.">
+</picture>
+
+<sub>Recorded on this repository with synthetic data. The console, the connect page, the code exchange, the encrypted grant, the background pulls and the normalization are the real ones; the provider side (consent screen and API) is played by the test servers of the connector tests. How it was made: <a href="docs/demo/README.md#provider-flow">docs/demo</a>.</sub>
+
 ### See it run
 
 These are real captures, not mockups: `ohs` 0.0.1 built from this repository, run natively
