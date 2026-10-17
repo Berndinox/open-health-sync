@@ -185,6 +185,13 @@ release may change the API, the configuration or the database schema.
   asleep). A night with no in bed sample is marked `"synthesized": true`. To rebuild nights
   stored before, see [docs/connectors/apple-health.md](docs/connectors/apple-health.md#sleep).
 
+### Security
+
+- The release workflow builds only a version tag on a commit of `main`, and never rebuilds a
+  published release: re-pushing its tag stops before anything is built, signed or uploaded.
+  The image build context is an allowlist of what `go build` needs, so a local `.env`, a dump
+  in `backups/` or a health export never reaches a builder.
+
 ## [0.1.0] - 2026-10-13
 
 Eleven new sources, FHIR R4 and Open mHealth output, CSV and Parquet exports, outgoing
