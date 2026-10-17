@@ -177,6 +177,13 @@ release may change the API, the configuration or the database schema.
   `connected_at` was sent, so the Swift and Kotlin SDKs could not decode the list and the
   console showed `-` for when a source was connected and when its backfill started.
   `connected_at` stays, with the same value as `created_at`.
+- Apple Health nights are whole again. A night recorded "in bed" had no figures; a night that
+  crossed midnight, which uploads file in two parts, was split in two, or its stages went to the
+  next night's session; a nap uploaded with a night went to that night or was dropped. Each
+  night is now one session with all its stages, whatever order its parts are processed in, and
+  its figures are the sums of its stages (`total_sleep_seconds` is the Health app's time
+  asleep). A night with no in bed sample is marked `"synthesized": true`. To rebuild nights
+  stored before, see [docs/connectors/apple-health.md](docs/connectors/apple-health.md#sleep).
 
 ## [0.1.0] - 2026-10-13
 
