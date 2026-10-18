@@ -18,7 +18,7 @@ on 2026-10-17. They change, so check [tryterra.co](https://tryterra.co) as well.
 | Price | Free. You pay for your own server | From $399 a month billed annually, or $499 billed monthly, with 100,000 credits. Each source a user connects costs 200 credits a month ([pricing](https://tryterra.co/pricing)) |
 | Where the data is kept | Your Postgres and your raw store, for as long as you decide | Terra's cloud, usually for two days and at most six months, then your destination ([privacy policy](https://tryterra.co/end-user-privacy)) |
 | Sources | 13 available, 3 more on main for the next release ([list](../connectors/README.md)) | 500+ wearables and health sources advertised, Garmin included |
-| Garmin | Not available: Garmin's developer program is not taking new applications. Garmin exports import as activity files (next release) | Yes, through Terra's existing partnership |
+| Garmin | Planned. Garmin has paused new developer access requests, per its replies to applicants. Garmin exports import as activity files (next release) | Yes, through Terra's existing partnership |
 | Data model | One canonical model, one unit per quantity, UCUM units and LOINC codes ([data model](../data-model.md)) | Terra's own JSON models: Activity, Body, Daily, Sleep, Nutrition, Menstruation and others |
 | FHIR | FHIR R4, checked with the official HL7 validator in CI ([FHIR R4](../fhir.md)) | A FHIR processing option. The documentation names no FHIR version |
 | Open mHealth | Yes, checked against the official schemas ([Open mHealth](../open-mhealth.md)) | Not found in its documentation |
@@ -84,7 +84,7 @@ Most of Terra's concepts have a direct counterpart. The data types map like this
 | Nutrition | `nutrition` |
 | Menstruation | `category-samples` and `menstrual-cycles` |
 | Historical data requests (`GET /activity`, `/sleep`, `/daily`, `/body`) | A backfill when a user connects, then reads with `start` and `end` on `GET /v1/users/{id}/<resource>` |
-| FHIR processing | `GET /v1/users/{id}/fhir` ([FHIR R4](../fhir.md)) |
+| FHIR processing | `GET /v1/users/{id}/fhir/Observation` and the other FHIR routes ([FHIR R4](../fhir.md)) |
 | AI Interface (MCP) | `ohs mcp` for desktop agents, or `/mcp` over HTTP ([MCP](../mcp.md)) |
 
 For each cloud provider, register your own developer app and set its keys: every connector guide
@@ -98,5 +98,6 @@ The [quickstart](../../README.md#quickstart) starts an instance with Docker Comp
 with 90 days of synthetic data from six sources, so you can call every route before you connect
 a real account.
 
-See also: [all the options compared](README.md) and
-[Open Health Sync vs Open Wearables](open-wearables.md).
+See also: [all the options compared](README.md),
+[Open Health Sync vs Open Wearables](open-wearables.md), [Junction alternative](junction.md) and
+[Spike API alternative](spike.md).
