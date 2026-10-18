@@ -57,9 +57,9 @@ type signInView struct {
 func (h *Handlers) peekState(ctx context.Context, provider, state string) (oauthState, bool, error) {
 	var s oauthState
 	err := h.d.Pool.QueryRow(ctx, `
-		SELECT tenant_id, user_id, coalesce(redirect_uri, ''), expires_at
+		SELECT tenant_id, user_id, coalesce(redirect_uri, ''), expires_at, tenant_keys_id
 		FROM ohs_sync.oauth_states WHERE state = $1 AND provider = $2`,
-		hashState(state), provider).Scan(&s.tenant, &s.user, &s.redirect, &s.expiresAt)
+		hashState(state), provider).Scan(&s.tenant, &s.user, &s.redirect, &s.expiresAt, &s.keys)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, false, nil
 	}
@@ -74,7 +74,7 @@ func (h *Handlers) peekState(ctx context.Context, provider, state string) (oauth
 // unknown, used, expired or not for a password provider.
 func (h *Handlers) signInState(w http.ResponseWriter, r *http.Request, provider, state string) (oauthState, connector.PasswordConnector, bool) {
 	ctx := r.Context()
-	oc, ok := h.d.oauth(provider)
+	oc, ok := h.d.capableOAuth(provider)
 	var pc connector.PasswordConnector
 	if ok {
 		pc, ok = connector.AsPassword(oc)
@@ -156,6 +156,11 @@ func (h *Handlers) SignIn() http.Handler {
 			}
 			h.finish(w, r, st, provider, false, code)
 			return
+		}
+		// Signed in with the application the state was minted for (the
+		// tenant's keys or the instance's), not just any of the provider.
+		if kp, ok := connector.AsPassword(oc); ok {
+			pc = kp
 		}
 		tokens, err := pc.SignIn(ctx, email, password)
 		switch _, limited := connector.AsRateLimit(err); {

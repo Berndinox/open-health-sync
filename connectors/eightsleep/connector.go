@@ -85,6 +85,7 @@ type Options struct {
 type Connector struct {
 	mu   sync.RWMutex
 	keys connector.Config
+	opts Options // what New was given, for NewInstance
 
 	authURL, apiBase string
 	httpc            *http.Client
@@ -104,6 +105,7 @@ var (
 // New returns an Eight Sleep connector.
 func New(o Options) *Connector {
 	c := &Connector{
+		opts:       o,
 		authURL:    o.AuthURL,
 		apiBase:    o.APIBase,
 		httpc:      o.HTTPClient,
@@ -156,6 +158,16 @@ func newHTTPClient() *http.Client {
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
+}
+
+// NewInstance returns a connector like c without keys, sharing its HTTP
+// client, for a tenant's own keys (connector.Instancer).
+func (c *Connector) NewInstance() connector.Connector {
+	o := c.opts
+	o.HTTPClient = c.httpc
+	n := New(o)
+	n.keys = nil
+	return n
 }
 
 // Slug returns "eight_sleep".
