@@ -513,3 +513,97 @@ func TestValidationError_ErrorString(t *testing.T) {
 	assert.Contains(t, errStr, "value")
 	assert.Contains(t, errStr, "350")
 }
+
+func TestValidateMapResult_EndBeforeStartAndFutureEnd(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Hour)
+	end := start.Add(-time.Minute)
+	far := now.AddDate(70, 0, 0)
+	mr := &model.MapResult{
+		QuantitySamples: []model.QuantitySample{{QuantityType: "heart_rate", Value: 60, StartDate: start, EndDate: end}},
+		CategorySamples: []model.CategorySample{{StartDate: start, EndDate: far}},
+		SleepPhases:     []model.SleepPhase{{StartDate: start, EndDate: end}},
+		NutritionLogs:   []model.NutritionLog{{StartDate: start, EndDate: &far}},
+		Workouts:        []model.Workout{{StartDate: start, EndDate: far}},
+		ECGRecordings:   []model.ECGRecording{{StartDate: start, EndDate: end}},
+		DailySummaries:  []model.DailySummary{{SummaryDate: far}},
+		Observations:    []model.Observation{{TS: start, EndTS: end}},
+	}
+	got := map[string]string{}
+	for _, e := range Rejections(ValidateMapResultAt(mr, now)) {
+		got[e.RecordType] = e.Field
+	}
+	assert.Equal(t, map[string]string{
+		"quantity_sample": "end_date", "category_sample": "end_date",
+		"sleep_phase": "end_date", "nutrition_log": "end_date",
+		"workout": "end_date", "ecg_recording": "end_date",
+		"daily_summary": "summary_date", "observation": "end_date",
+	}, got)
+}
+
+func TestValidateWorkout_SummaryRanges(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		w    model.Workout
+		sev  Severity // empty for no finding
+	}{
+		{"plausible", model.Workout{AvgHeartRate: f(142), MaxHeartRate: f(181), ActiveEnergyKcal: f(620), DistanceM: f(10200), AvgSpeedMps: f(3.1), ElevationGainM: f(84), VO2Max: f(52)}, ""},
+		{"heart rate x10", model.Workout{AvgHeartRate: f(1420)}, SeverityReject},
+		{"negative heart rate", model.Workout{MaxHeartRate: f(-180)}, SeverityReject},
+		{"no heart rate recorded", model.Workout{AvgHeartRate: f(0)}, SeveritySuspect},
+		{"negative energy", model.Workout{ActiveEnergyKcal: f(-500)}, SeverityReject},
+		{"negative distance", model.Workout{DistanceM: f(-3)}, SeverityReject},
+		{"negative speed", model.Workout{AvgSpeedMps: f(-1)}, SeverityReject},
+		{"negative climb", model.Workout{ElevationGainM: f(-12)}, SeverityReject},
+		{"vo2 max x10", model.Workout{VO2Max: f(520)}, SeverityReject},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.w.StartDate = now.Add(-time.Hour)
+			c.w.EndDate = now
+			errs := ValidateMapResultAt(&model.MapResult{Workouts: []model.Workout{c.w}}, now)
+			switch c.sev {
+			case "":
+				assert.Empty(t, errs)
+			case SeverityReject:
+				assert.Len(t, Rejections(errs), 1)
+			default:
+				assert.Empty(t, Rejections(errs))
+				assert.Len(t, Suspicions(errs), 1)
+			}
+		})
+	}
+}
+
+func TestValidateNutritionLog_Amounts(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		n    model.NutritionLog
+		sev  Severity
+	}{
+		{"plausible", model.NutritionLog{EnergyKcal: f(640), ProteinG: f(32), CarbsG: f(70), SodiumMg: f(900), NutrientsJSON: map[string]any{"water": 250.0}}, ""},
+		{"negative energy", model.NutritionLog{EnergyKcal: f(-100000)}, SeverityReject},
+		{"negative protein", model.NutritionLog{ProteinG: f(-3)}, SeverityReject},
+		{"negative water", model.NutritionLog{NutrientsJSON: map[string]any{"water": -100000.0}}, SeverityReject},
+		{"huge meal", model.NutritionLog{EnergyKcal: f(1e6)}, SeveritySuspect},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.n.StartDate = now.Add(-time.Hour)
+			errs := ValidateMapResultAt(&model.MapResult{NutritionLogs: []model.NutritionLog{c.n}}, now)
+			switch c.sev {
+			case "":
+				assert.Empty(t, errs)
+			case SeverityReject:
+				assert.Len(t, Rejections(errs), 1)
+			default:
+				assert.Empty(t, Rejections(errs))
+				assert.Len(t, Suspicions(errs), 1)
+			}
+		})
+	}
+}

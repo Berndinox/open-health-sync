@@ -5,6 +5,7 @@ package etl
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,6 +101,9 @@ func ValidateMapResultAt(mr *model.MapResult, now time.Time) []ValidationError {
 	for i := range mr.SleepSessions {
 		errs = append(errs, at(validateSleepSession(&mr.SleepSessions[i], now), i)...)
 	}
+	for i := range mr.SleepPhases {
+		errs = append(errs, at(validateSleepPhase(&mr.SleepPhases[i], now), i)...)
+	}
 	for i := range mr.Workouts {
 		errs = append(errs, at(validateWorkout(&mr.Workouts[i], now), i)...)
 	}
@@ -108,6 +112,15 @@ func ValidateMapResultAt(mr *model.MapResult, now time.Time) []ValidationError {
 	}
 	for i := range mr.NutritionLogs {
 		errs = append(errs, at(validateNutritionLog(&mr.NutritionLogs[i], now), i)...)
+	}
+	for i := range mr.DailySummaries {
+		errs = append(errs, at(validateDailySummary(&mr.DailySummaries[i], now), i)...)
+	}
+	for i := range mr.Observations {
+		errs = append(errs, at(validateObservation(&mr.Observations[i], now), i)...)
+	}
+	for i := range mr.ECGRecordings {
+		errs = append(errs, at(validateECGRecording(&mr.ECGRecordings[i], now), i)...)
 	}
 	for i := range mr.ECGSamples {
 		errs = append(errs, at(validateECGVoltageSample(&mr.ECGSamples[i], now), i)...)
@@ -165,7 +178,37 @@ func validateQuantitySample(s *model.QuantitySample, now time.Time) []Validation
 			Severity:   SeverityReject,
 		})
 	}
+	errs = append(errs, checkEnd("quantity_sample", s.StartDate, s.EndDate, now)...)
 
+	return errs
+}
+
+// checkEnd rejects an end that precedes the start or lies in the future. A
+// zero end means an instant and passes. A start already in the future is
+// reported by the caller, so its end is not reported twice.
+func checkEnd(recordType string, start, end, now time.Time) []ValidationError {
+	if end.IsZero() {
+		return nil
+	}
+	var errs []ValidationError
+	if end.Before(start) {
+		errs = append(errs, ValidationError{
+			RecordType: recordType,
+			Field:      "end_date",
+			Value:      end,
+			Message:    "end_date must not be before start_date",
+			Severity:   SeverityReject,
+		})
+	}
+	if isFutureTimestamp(end, now) && !isFutureTimestamp(start, now) {
+		errs = append(errs, ValidationError{
+			RecordType: recordType,
+			Field:      "end_date",
+			Value:      end,
+			Message:    "timestamp is in the future (more than 48h ahead)",
+			Severity:   SeverityReject,
+		})
+	}
 	return errs
 }
 
@@ -248,6 +291,26 @@ func validateCategorySample(s *model.CategorySample, now time.Time) []Validation
 			Message:    "timestamp is in the future (more than 48h ahead)",
 		})
 	}
+	errs = append(errs, checkEnd("category_sample", s.StartDate, s.EndDate, now)...)
+
+	return errs
+}
+
+// validateSleepPhase checks a stage interval like any other sample: not in
+// the future and not ending before it starts. A rejected phase parks its
+// whole record, since a night with a stage cut out would misreport it.
+func validateSleepPhase(p *model.SleepPhase, now time.Time) []ValidationError {
+	var errs []ValidationError
+
+	if isFutureTimestamp(p.StartDate, now) {
+		errs = append(errs, ValidationError{
+			RecordType: "sleep_phase",
+			Field:      "start_date",
+			Value:      p.StartDate,
+			Message:    "timestamp is in the future (more than 48h ahead)",
+		})
+	}
+	errs = append(errs, checkEnd("sleep_phase", p.StartDate, p.EndDate, now)...)
 
 	return errs
 }
@@ -308,6 +371,15 @@ func validateWorkout(w *model.Workout, now time.Time) []ValidationError {
 		})
 	}
 
+	if isFutureTimestamp(w.EndDate, now) && !isFutureTimestamp(w.StartDate, now) {
+		errs = append(errs, ValidationError{
+			RecordType: "workout",
+			Field:      "end_date",
+			Value:      w.EndDate,
+			Message:    "timestamp is in the future (more than 48h ahead)",
+		})
+	}
+
 	if w.DurationS != nil && *w.DurationS < 0 {
 		errs = append(errs, ValidationError{
 			RecordType: "workout",
@@ -317,7 +389,61 @@ func validateWorkout(w *model.Workout, now time.Time) []ValidationError {
 		})
 	}
 
+	for _, f := range []struct {
+		field string
+		v     *float64
+		rule  rangeRule
+	}{
+		{"avg_heart_rate", w.AvgHeartRate, workoutHeartRate},
+		{"max_heart_rate", w.MaxHeartRate, workoutHeartRate},
+		{"active_energy_kcal", w.ActiveEnergyKcal, rangeRules[model.QTActiveEnergyBurned]},
+		{"distance_m", w.DistanceM, rangeRules[model.QTDistanceWalkingRunning]},
+		{"avg_speed_mps", w.AvgSpeedMps, workoutSpeed},
+		{"elevation_gain_m", w.ElevationGainM, workoutElevationGain},
+		{"vo2_max", w.VO2Max, rangeRules["vo2_max"]},
+	} {
+		if e := checkValue("workout", f.field, f.v, f.rule); e != nil {
+			errs = append(errs, *e)
+		}
+	}
+
 	return errs
+}
+
+// The bands of the workout summary fields that have no quantity type of
+// their own. A heart rate of zero is a device that recorded none, not a
+// measurement, so it is flagged instead of parking the whole workout.
+var (
+	workoutHeartRate     = rangeRule{HardMin: 0, HardMax: 300, SoftMin: 25, SoftMax: 250}
+	workoutSpeed         = rangeRule{HardMin: 0, HardMax: 150, SoftMin: 0, SoftMax: 40}
+	workoutElevationGain = rangeRule{HardMin: 0, HardMax: 20000, SoftMin: 0, SoftMax: 10000}
+)
+
+// checkValue range-checks one optional figure of a record: outside the hard
+// band parks the record, outside the soft band flags it.
+func checkValue(recordType, field string, v *float64, r rangeRule) *ValidationError {
+	if v == nil {
+		return nil
+	}
+	if math.IsNaN(*v) || *v < r.HardMin || *v > r.HardMax {
+		return &ValidationError{
+			RecordType: recordType,
+			Field:      field,
+			Value:      *v,
+			Message:    fmt.Sprintf("%s out of range [%g, %g]: %g", field, r.HardMin, r.HardMax, *v),
+			Severity:   SeverityReject,
+		}
+	}
+	if *v < r.SoftMin || *v > r.SoftMax {
+		return &ValidationError{
+			RecordType: recordType,
+			Field:      field,
+			Value:      *v,
+			Message:    fmt.Sprintf("%s outside the expected range [%g, %g]: %g", field, r.SoftMin, r.SoftMax, *v),
+			Severity:   SeveritySuspect,
+		}
+	}
+	return nil
 }
 
 // validateRoutePoint checks GPS coordinate ranges and timestamps.
@@ -366,6 +492,102 @@ func validateNutritionLog(n *model.NutritionLog, now time.Time) []ValidationErro
 			Message:    "timestamp is in the future (more than 48h ahead)",
 		})
 	}
+	if n.EndDate != nil {
+		errs = append(errs, checkEnd("nutrition_log", n.StartDate, *n.EndDate, now)...)
+	}
+
+	for _, f := range []struct {
+		field string
+		v     *float64
+		rule  rangeRule
+	}{
+		{"energy_kcal", n.EnergyKcal, mealEnergy},
+		{"protein_g", n.ProteinG, mealGrams},
+		{"carbs_g", n.CarbsG, mealGrams},
+		{"fat_g", n.FatG, mealGrams},
+		{"fiber_g", n.FiberG, mealGrams},
+		{"sugar_g", n.SugarG, mealGrams},
+		{"sodium_mg", n.SodiumMg, mealSodium},
+	} {
+		if e := checkValue("nutrition_log", f.field, f.v, f.rule); e != nil {
+			errs = append(errs, *e)
+		}
+	}
+	// The extended nutrients are amounts too: none can be negative.
+	for _, k := range sortedKeys(n.NutrientsJSON) {
+		v, ok := n.NutrientsJSON[k].(float64)
+		if !ok {
+			continue
+		}
+		if e := checkValue("nutrition_log", "nutrients."+k, &v, nonNegative); e != nil {
+			errs = append(errs, *e)
+		}
+	}
+
+	return errs
+}
+
+// The bands of a logged meal or drink. A day's intake rarely passes 10000
+// kcal, so one log above 20000 is flagged, not refused.
+var (
+	mealEnergy  = rangeRule{HardMin: 0, HardMax: unbounded, SoftMin: 0, SoftMax: 20000}
+	mealGrams   = rangeRule{HardMin: 0, HardMax: unbounded, SoftMin: 0, SoftMax: 5000}
+	mealSodium  = rangeRule{HardMin: 0, HardMax: unbounded, SoftMin: 0, SoftMax: 100000}
+	nonNegative = rangeRule{HardMin: 0, HardMax: unbounded, SoftMin: 0, SoftMax: unbounded}
+)
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// validateDailySummary rejects a summary of a day that has not begun.
+func validateDailySummary(d *model.DailySummary, now time.Time) []ValidationError {
+	if !isFutureTimestamp(d.SummaryDate, now) {
+		return nil
+	}
+	return []ValidationError{{
+		RecordType: "daily_summary",
+		Field:      "summary_date",
+		Value:      d.SummaryDate,
+		Message:    "timestamp is in the future (more than 48h ahead)",
+	}}
+}
+
+// validateObservation checks an observation's instant and interval.
+func validateObservation(o *model.Observation, now time.Time) []ValidationError {
+	var errs []ValidationError
+
+	if isFutureTimestamp(o.TS, now) {
+		errs = append(errs, ValidationError{
+			RecordType: "observation",
+			Field:      "ts",
+			Value:      o.TS,
+			Message:    "timestamp is in the future (more than 48h ahead)",
+		})
+	}
+	errs = append(errs, checkEnd("observation", o.TS, o.EndTS, now)...)
+
+	return errs
+}
+
+// validateECGRecording checks a recording's interval like a sample's.
+func validateECGRecording(r *model.ECGRecording, now time.Time) []ValidationError {
+	var errs []ValidationError
+
+	if isFutureTimestamp(r.StartDate, now) {
+		errs = append(errs, ValidationError{
+			RecordType: "ecg_recording",
+			Field:      "start_date",
+			Value:      r.StartDate,
+			Message:    "timestamp is in the future (more than 48h ahead)",
+		})
+	}
+	errs = append(errs, checkEnd("ecg_recording", r.StartDate, r.EndDate, now)...)
 
 	return errs
 }

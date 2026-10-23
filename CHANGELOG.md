@@ -7,6 +7,33 @@ release may change the API, the configuration or the database schema.
 
 ## [Unreleased]
 
+### Added
+
+- A synthetic data generator for every documented provider (`internal/synth`): an invented
+  person's timeline rendered in each vendor's wire format, written from the vendor's published
+  documentation, with scenarios for DST and travel, several devices, gaps, duplicates, missing,
+  out of range and malformed values, unit variants and huge exports. `go test ./...` runs a light
+  version; the nightly `synthetic-data` workflow runs every scenario, and every provider
+  through a running server and database (`test/synthflow`). See
+  [docs/specs/synthetic-data.md](docs/specs/synthetic-data.md).
+
+### Fixed
+
+- Sleep phases, ECG recordings, daily summaries and observations are now validated, and an end
+  before the start or far in the future is refused on every record kind.
+- Apple Health glucose in mmol/L and the `yd`, `in`, `s`, `oz` and `lb` unit spellings are
+  accepted instead of refused.
+- Workout heart rate, energy, distance, speed, climb and VO2 max are range-checked.
+- Nutrition logs with negative energy, macros or nutrients are refused.
+- Health Connect: `recordingMethod` `manual_entry` marks the record as user entered.
+- A NUL character in a source name or a metadata value no longer fails the whole raw object:
+  the job used to retry until parked and every record beside it was lost. NUL and invalid
+  UTF-8 are removed from mapped records and from failed record payloads.
+- The sample export and the archive decide the merged view in one pass over the stored samples
+  instead of one lookup per record: on second by second data the default export streamed about
+  110 rows a second; an Apple Health account of 57 575 merged samples now exports in under a
+  second instead of 10 minutes, record for record the same.
+
 ## [0.2.0] - 2026-10-21
 
 An admin console that runs the pipeline, an admin API for instances that serve several teams,
