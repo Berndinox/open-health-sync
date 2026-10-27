@@ -9,6 +9,14 @@ release may change the API, the configuration or the database schema.
 
 ### Added
 
+- Each provider is pulled on its own sync policy (`connector.SyncPolicy`): interval with and
+  without notifications, lookback for late data, catch-up bound, backfill length and an optional
+  daily reconciliation that widens the 00:00 UTC pull. Dexcom re-reads 6 hours (its readings
+  reach the API up to 3 hours late outside the US, so they were missed after the backfill),
+  OMRON 72 hours, Ultrahuman 48, Eight Sleep 36 and the others 24. Oura, WHOOP, Withings and
+  Dexcom are backfilled over 90 days, Polar and Suunto over the 28 days their APIs serve, and
+  Strava and Suunto are pulled less often to stay inside their rate limits. See
+  [docs/background-sync.md](docs/background-sync.md#sync-policy-per-provider).
 - `deploy/Caddyfile`: Caddy with automatic TLS in front of the compose stack, and the routes to
   keep on `ohs` when the host serves other pages too, so `/healthz` and `/readyz` are never
   redirected. See [docs/self-hosting.md](docs/self-hosting.md#reverse-proxy).
@@ -51,6 +59,9 @@ release may change the API, the configuration or the database schema.
 
 ### Fixed
 
+- A failed pull window is fetched again: the regular pull now reaches back to the end of the
+  last complete pull (`synced_through`) instead of the last successful job, which a pull of one
+  notified data type moved forward.
 - A NUL character or invalid UTF-8 in a path, a query parameter or a JSON string no longer ends
   in a 500 (31 operations did) or an MCP "internal error": the path and the query are checked
   before routing and answer 400, a JSON body with a `\u0000` answers 400 naming the field, and an
