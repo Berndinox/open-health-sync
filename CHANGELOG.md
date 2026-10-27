@@ -9,6 +9,9 @@ release may change the API, the configuration or the database schema.
 
 ### Added
 
+- `deploy/Caddyfile`: Caddy with automatic TLS in front of the compose stack, and the routes to
+  keep on `ohs` when the host serves other pages too, so `/healthz` and `/readyz` are never
+  redirected. See [docs/self-hosting.md](docs/self-hosting.md#reverse-proxy).
 - Each provider is pulled on its own sync policy (`connector.SyncPolicy`): interval with and
   without notifications, lookback for late data, catch-up bound, backfill length and an optional
   daily reconciliation that widens the 00:00 UTC pull. Dexcom re-reads 6 hours (its readings
@@ -17,9 +20,6 @@ release may change the API, the configuration or the database schema.
   Dexcom are backfilled over 90 days, Polar and Suunto over the 28 days their APIs serve, and
   Strava and Suunto are pulled less often to stay inside their rate limits. See
   [docs/background-sync.md](docs/background-sync.md#sync-policy-per-provider).
-- `deploy/Caddyfile`: Caddy with automatic TLS in front of the compose stack, and the routes to
-  keep on `ohs` when the host serves other pages too, so `/healthz` and `/readyz` are never
-  redirected. See [docs/self-hosting.md](docs/self-hosting.md#reverse-proxy).
 - A synthetic data generator for every documented provider (`internal/synth`): an invented
   person's timeline rendered in each vendor's wire format, written from the vendor's published
   documentation, with scenarios for DST and travel, several devices, gaps, duplicates, missing,
@@ -49,6 +49,12 @@ release may change the API, the configuration or the database schema.
   backend killed or restarted: pgx's "conn closed" at the next begin or commit) counts as an
   outage too. Other failures stay 500, a refused database login, a protocol error and a
   canceled request included.
+- Swift SDK: the anchored sync of one type is `AnchoredSync`, over `AnchoredChangeSource` and
+  `AppleHealthPartUploader`, so it is tested with fakes on every platform; `HealthKitSync` runs
+  it over `HKAnchoredObjectQuery`. `SyncReport` (same module, `OpenHealthSyncHealthKit`) now
+  compiles on every platform and gains `deletionsByType`, `deletionsUploaded` and
+  `deletionsPendingByType`. `UploadResult` gains `features`, `acceptsDeletionLines` and a
+  public initializer.
 - An upload to a full or read-only raw store (no space left, a quota, a read-only or
   unwritable directory) answers 503 with `Retry-After: 60` instead of a 500 a client may give up
   on; nothing is recorded, so the same part can be sent again once there is room.
@@ -59,14 +65,29 @@ release may change the API, the configuration or the database schema.
 
 ### Fixed
 
-- A failed pull window is fetched again: the regular pull now reaches back to the end of the
-  last complete pull (`synced_through`) instead of the last successful job, which a pull of one
-  notified data type moved forward.
 - A NUL character or invalid UTF-8 in a path, a query parameter or a JSON string no longer ends
   in a 500 (31 operations did) or an MCP "internal error": the path and the query are checked
   before routing and answer 400, a JSON body with a `\u0000` answers 400 naming the field, and an
   MCP tool refuses the argument by name. An audit event whose path value held a NUL was dropped;
   its text is now cleaned and the event written.
+- A failed pull window is fetched again: the regular pull now reaches back to the end of the
+  last complete pull (`synced_through`) instead of the last successful job, which a pull of one
+  notified data type moved forward.
+- Apple Health: deleted and edited HealthKit samples are removed from the server. The Swift SDK
+  used to drop the deleted objects of its anchored queries and move the anchor past them, and
+  since HealthKit edits a sample by deleting it and saving a new one, every edited weight or
+  blood pressure reading stayed stored twice. The upload contract has a deletion line,
+  `{"deletedUuid":"<uuid>"}` ([docs](docs/connectors/apple-health.md#deletions)). Records keep
+  their HealthKit `uuid` as `external_id`, and every sample UUID leaves an alias on the row it was
+  stored as or de-duplicated into (`ohs_data.record_aliases`, migration 0043, pruned with its rows
+  by `OHS_RETENTION_DAYS`): a deletion removes a row only once no live sample stands for it, so two apps writing the same reading, or a new
+  copy saved a sync before the old one is deleted, keep it. Uploading the history again
+  (`resetAnchor`) makes rows stored by 0.2.0 deletable. Upload answers list
+  `features: ["deletion_lines"]`; `HealthKitSync` sends a round's deletions once, after its
+  samples, only to a server that lists it, keeps them beside the anchor otherwise, and saves the
+  anchor only once both are uploaded. Sleep stages, ECG and heartbeat series are not covered.
+- A provider deletion recomputes the derived daily totals of the days of the samples it removed,
+  and a derived day left without samples is dropped.
 - Sleep phases, ECG recordings, daily summaries and observations are now validated, and an end
   before the start or far in the future is refused on every record kind.
 - Apple Health glucose in mmol/L and the `yd`, `in`, `s`, `oz` and `lb` unit spellings are
